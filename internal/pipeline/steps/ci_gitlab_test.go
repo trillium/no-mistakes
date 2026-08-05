@@ -27,8 +27,7 @@ import (
 // test. None of these tests exercise timeout re-arming, so both inputs are
 // pinned to fixed values.
 func pinCIMonitorClock(step *CIStep) {
-	frozen := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	step.now = func() time.Time { return frozen }
+	step.now = frozenCIClock()
 	step.baseBranchTip = func(context.Context) (string, bool) { return "base-tip-sha", true }
 }
 
@@ -250,6 +249,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()

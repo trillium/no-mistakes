@@ -85,6 +85,7 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -125,6 +126,7 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -172,6 +174,7 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -414,6 +417,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount >= 3 {
