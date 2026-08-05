@@ -54,6 +54,44 @@ func TestInsertRunWithIntent(t *testing.T) {
 	}
 }
 
+func TestSetRunAgentOverride(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if got, err := d.GetRun(run.ID); err != nil {
+		t.Fatalf("get run: %v", err)
+	} else if got.AgentOverride != nil {
+		t.Fatalf("agent override = %v, want nil on a fresh run", got.AgentOverride)
+	}
+
+	if err := d.SetRunAgentOverride(run.ID, "  acp:gemini  "); err != nil {
+		t.Fatalf("set agent override: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.AgentOverride == nil || *got.AgentOverride != "acp:gemini" {
+		t.Fatalf("agent override = %v, want %q (trimmed)", got.AgentOverride, "acp:gemini")
+	}
+
+	// A blank selector clears the override rather than storing whitespace.
+	if err := d.SetRunAgentOverride(run.ID, "   "); err != nil {
+		t.Fatalf("clear agent override: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.AgentOverride != nil {
+		t.Fatalf("agent override = %v, want nil after clearing", got.AgentOverride)
+	}
+}
+
 func TestRunCIReadinessStoresNoCIDeclaration(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

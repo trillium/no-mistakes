@@ -133,3 +133,33 @@ func TestACPRawCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestValidAgentSelector(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent AgentName
+		want  bool
+	}{
+		{name: "auto", agent: AgentAuto, want: true},
+		{name: "claude", agent: AgentClaude, want: true},
+		{name: "codex", agent: AgentCodex, want: true},
+		{name: "rovodev", agent: AgentRovoDev, want: true},
+		{name: "opencode", agent: AgentOpenCode, want: true},
+		{name: "pi", agent: AgentPi, want: true},
+		{name: "copilot", agent: AgentCopilot, want: true},
+		{name: "cursor alias", agent: AgentCursor, want: true},
+		{name: "explicit acp target", agent: "acp:gemini", want: true},
+		{name: "explicit acp alias target", agent: "acp:cursor", want: true},
+		{name: "empty", agent: "", want: false},
+		{name: "unknown native", agent: "gpt5", want: false},
+		{name: "empty acp target", agent: "acp:", want: false},
+		{name: "whitespace acp target", agent: "acp:foo bar", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidAgentSelector(tt.agent); got != tt.want {
+				t.Fatalf("ValidAgentSelector(%q) = %v, want %v", tt.agent, got, tt.want)
+			}
+		})
+	}
+}

@@ -109,3 +109,38 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestAgentPushOptionRoundTrip(t *testing.T) {
+	// An agent selector rides the line-oriented push-option transport intact,
+	// alongside unrelated options.
+	opt := formatAgentPushOption("acp:gemini")
+	if opt == "" {
+		t.Fatal("formatAgentPushOption returned empty for a non-empty agent")
+	}
+	got := parseAgentPushOptions([]string{"no-mistakes.skip=test", opt})
+	if got != "acp:gemini" {
+		t.Fatalf("round-trip = %q, want %q", got, "acp:gemini")
+	}
+}
+
+func TestFormatAgentPushOptionEmpty(t *testing.T) {
+	if got := formatAgentPushOption("   "); got != "" {
+		t.Fatalf("formatAgentPushOption(blank) = %q, want empty", got)
+	}
+}
+
+func TestParseAgentPushOptionsLastWins(t *testing.T) {
+	got := parseAgentPushOptions([]string{
+		formatAgentPushOption("claude"),
+		formatAgentPushOption("codex"),
+	})
+	if got != "codex" {
+		t.Fatalf("parseAgentPushOptions(last wins) = %q, want %q", got, "codex")
+	}
+}
+
+func TestParseAgentPushOptionsNone(t *testing.T) {
+	if got := parseAgentPushOptions([]string{"no-mistakes.skip=test", "ci.skip"}); got != "" {
+		t.Fatalf("parseAgentPushOptions(no agent) = %q, want empty", got)
+	}
+}

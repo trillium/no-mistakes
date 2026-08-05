@@ -121,6 +121,19 @@ If you install `acpx` separately, you can opt into any ACP target with the `acp:
 
 The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the exact resolution order, fallback-list filtering and retry semantics, and the failure behavior when no entry is runnable.
 
+### Per-run override
+
+Pass `--agent` to `no-mistakes axi run` to choose the pipeline agent for a single run without editing any config file or restarting the daemon:
+
+```sh
+no-mistakes axi run --intent "the user's goal" --agent codex
+```
+
+It accepts the same values as the `agent` field (`auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`) and replaces the configured agent, including any fallback list, for that run only.
+The override applies only when starting a fresh run; reattaching to an in-flight run keeps that run's agent.
+It is persisted with the run, so a daemon restart mid-run rebuilds the same agent rather than reverting to the configured one.
+It carries the same trust as your global config: it is honored from the local command driving the run and is never taken from pushed-branch content.
+
 ## Where agent choice matters most
 
 Changing agents most directly affects:

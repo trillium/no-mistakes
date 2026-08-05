@@ -191,6 +191,23 @@ func (a ACPAlias) DefaultCommandBinary() string {
 	return fields[0]
 }
 
+// ValidAgentSelector reports whether name is usable as the pipeline agent
+// selector: "auto", a native adapter name, a first-class ACP alias (e.g.
+// cursor), or an explicit acp:<target>. It centralizes the selector-name check
+// shared by config parsing and the per-run `axi run --agent` override so both
+// accept exactly the set the agent factory can construct. It does not probe
+// whether the underlying binary is installed - only that the name is a shape
+// the daemon knows how to build.
+func ValidAgentSelector(name AgentName) bool {
+	switch name {
+	case AgentAuto, AgentClaude, AgentCodex, AgentRovoDev, AgentOpenCode, AgentPi, AgentCopilot:
+		return true
+	}
+	// Covers first-class aliases (cursor) and explicit acp:<target> names.
+	_, ok := ACPTargetFor(name)
+	return ok
+}
+
 // ACPTargetFor resolves the ACP target an agent name drives: the alias target
 // for a first-class alias, or the parsed target of an explicit acp:<target>
 // name. Returns false for non-ACP agent names.

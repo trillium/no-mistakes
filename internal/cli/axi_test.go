@@ -496,12 +496,44 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+}
+
+func TestRerunParamsIncludeAgentOverride(t *testing.T) {
+	params := rerunParams("repo-1", "feature/x", nil, "user goal", "acp:gemini")
+	if params.Agent != "acp:gemini" {
+		t.Fatalf("Agent = %q, want %q", params.Agent, "acp:gemini")
+	}
+	// The default (no override) must leave the field empty so the daemon keeps
+	// the configured agent.
+	if empty := rerunParams("repo-1", "feature/x", nil, "user goal", ""); empty.Agent != "" {
+		t.Fatalf("Agent = %q, want empty when no override is passed", empty.Agent)
+	}
+}
+
+func TestAxiRunRejectsUnknownAgent(t *testing.T) {
+	cmd := newAxiRunCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--agent", "bogus", "--intent", "user goal"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected an error for an unknown --agent")
+	}
+	got := out.String()
+	if !strings.Contains(got, "unknown --agent") || !strings.Contains(got, "bogus") {
+		t.Fatalf("expected unknown-agent error, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Valid agents:") {
+		t.Fatalf("expected valid-agents help, got:\n%s", got)
 	}
 }
 
@@ -826,7 +858,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", ""); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

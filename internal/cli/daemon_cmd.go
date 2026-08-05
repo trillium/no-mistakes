@@ -106,6 +106,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			agentOverride := parseAgentPushOptions(pushOptions)
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -130,6 +131,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				New:       newSHA,
 				SkipSteps: skipSteps,
 				Intent:    intent,
+				Agent:     agentOverride,
 			}, &result)
 		},
 	}
@@ -219,6 +221,34 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// agentPushOptionPrefix carries a per-run agent-selector override through a git
+// push, so `axi run --agent <name>` reaches the daemon on the push-trigger path
+// exactly like the intent option does. Agent selectors are constrained tokens
+// (auto, native names, acp:<target>), so no encoding is needed.
+const agentPushOptionPrefix = "no-mistakes.agent="
+
+// formatAgentPushOption encodes an agent-selector override as a single push
+// option, or returns "" when there is no override to carry.
+func formatAgentPushOption(agent string) string {
+	trimmed := strings.TrimSpace(agent)
+	if trimmed == "" {
+		return ""
+	}
+	return agentPushOptionPrefix + trimmed
+}
+
+// parseAgentPushOptions extracts the agent-selector override, if any. The last
+// occurrence wins, mirroring parseIntentPushOptions.
+func parseAgentPushOptions(options []string) string {
+	agent := ""
+	for _, option := range options {
+		if value, ok := strings.CutPrefix(option, agentPushOptionPrefix); ok {
+			agent = strings.TrimSpace(value)
+		}
+	}
+	return agent
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

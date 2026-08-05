@@ -88,13 +88,18 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --agent codex
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag          | Type     | Default | Description                                                        |
+| ------------- | -------- | ------- | ----------------------------------------------------------------- |
+| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run  |
+| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome         |
+| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                            |
+| `--agent`     | `string` | (none)  | Override the configured pipeline agent for this run only          |
+
+`--agent` accepts the same values as the [`agent`](/no-mistakes/reference/global-config/#agent) config field (`auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`) and replaces the configured agent, including any fallback list, for that run.
+It applies only when starting a new run, does not edit config or restart the daemon, and is persisted with the run so a daemon restart mid-run keeps the same agent.
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.

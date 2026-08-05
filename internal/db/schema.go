@@ -206,4 +206,9 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	// Per-run pipeline agent selector from `axi run --agent`, persisted so a
+	// daemon restart rebuilds the run's agent with the same selector instead of
+	// reverting to the configured agent. Nullable: historical and non-overridden
+	// runs use the configured agent.
+	`ALTER TABLE runs ADD COLUMN agent_override TEXT`,
 }
