@@ -529,11 +529,51 @@ func TestAxiRunRejectsUnknownAgent(t *testing.T) {
 		t.Fatal("expected an error for an unknown --agent")
 	}
 	got := out.String()
-	if !strings.Contains(got, "unknown --agent") || !strings.Contains(got, "bogus") {
+	if !strings.Contains(got, "--agent") || !strings.Contains(got, "unknown agent") || !strings.Contains(got, "bogus") {
 		t.Fatalf("expected unknown-agent error, got:\n%s", got)
 	}
 	if !strings.Contains(got, "Valid agents:") {
 		t.Fatalf("expected valid-agents help, got:\n%s", got)
+	}
+}
+
+// The --agent preflight accepts <harness>:<model>, keeps acp:<target> working,
+// and refuses a model on a harness that has no model channel by naming it.
+func TestAxiRunAgentSelectorPreflightAcceptsModels(t *testing.T) {
+	runPreflight := func(t *testing.T, selector string) (error, string) {
+		t.Helper()
+		cmd := newAxiRunCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"--agent", selector, "--intent", "user goal"})
+		return cmd.Execute(), out.String()
+	}
+
+	// Accepted selectors get past the preflight; they fail later for an
+	// unrelated reason (no repo/daemon here), so only the preflight message
+	// must be absent.
+	for _, selector := range []string{"claude:opus", "codex:gpt-5.4", "opencode:github-copilot/gpt-4.1", "acp:gemini"} {
+		_, got := runPreflight(t, selector)
+		if strings.Contains(got, "invalid --agent") {
+			t.Fatalf("selector %q was rejected by the preflight:\n%s", selector, got)
+		}
+	}
+
+	for _, tc := range []struct{ selector, want string }{
+		{"rovodev:gpt-5.4", "rovodev"},
+		{"cursor:gpt-5.4", "cursor"},
+		{"auto:opus", "auto"},
+		{"claude:", "non-empty model"},
+		{"opencode:gpt-4.1", "<provider>/<model>"},
+	} {
+		err, got := runPreflight(t, tc.selector)
+		if err == nil {
+			t.Fatalf("selector %q was accepted, want rejection", tc.selector)
+		}
+		if !strings.Contains(got, "invalid --agent") || !strings.Contains(got, tc.want) {
+			t.Fatalf("selector %q error does not mention %q:\n%s", tc.selector, tc.want, got)
+		}
 	}
 }
 

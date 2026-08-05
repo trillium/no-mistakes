@@ -129,10 +129,26 @@ Pass `--agent` to `no-mistakes axi run` to choose the pipeline agent for a singl
 no-mistakes axi run --intent "the user's goal" --agent codex
 ```
 
-It accepts the same values as the `agent` field (`auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`) and replaces the configured agent, including any fallback list, for that run only.
+It accepts the same values as the `agent` field (`auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`, `<harness>:<model>`) and replaces the configured agent, including any fallback list, for that run only.
 The override applies only when starting a fresh run; reattaching to an in-flight run keeps that run's agent.
-It is persisted with the run, so a daemon restart mid-run rebuilds the same agent rather than reverting to the configured one.
+It is persisted with the run, so a daemon restart mid-run rebuilds the same agent - and the same model - rather than reverting to the configured one.
 It carries the same trust as your global config: it is honored from the local command driving the run and is never taken from pushed-branch content.
+
+### Choosing a model
+
+Append `:<model>` to a harness to pick the model for that run or that config, without editing the harness' own configuration:
+
+```sh
+no-mistakes axi run --intent "the user's goal" --agent opencode:github-copilot/gpt-4.1
+no-mistakes axi run --intent "the user's goal" --agent codex:gpt-5.4
+```
+
+The selector splits on the **first** colon. `acp` is reserved: `acp:gemini` is still an ACP bridge target, never a harness plus a model.
+The model itself may contain a slash (opencode model ids are `<provider>/<model>`) but never a colon.
+`auto`, `rovodev`, `cursor`, and `acp:<target>` have no model channel and reject a model with an error naming the harness instead of ignoring it.
+
+A selector model beats a model set in [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override).
+The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the per-harness delivery table and the precedence rule.
 
 ## Where agent choice matters most
 

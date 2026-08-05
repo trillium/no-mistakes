@@ -20,6 +20,9 @@ import (
 type copilotAgent struct {
 	bin       string
 	extraArgs []string
+	// model is the per-run model from an `--agent copilot:<model>` selector,
+	// empty when none was chosen. It is rendered as copilot's --model flag.
+	model string
 }
 
 func (a *copilotAgent) Name() string { return "copilot" }
@@ -144,8 +147,17 @@ func copilotErrorDetail(copilotErr, stderr string) string {
 // added; --no-ask-user is always added so the agent never blocks waiting for
 // interactive input.
 func (a *copilotAgent) buildArgs(prompt string) []string {
-	args := make([]string, 0, len(a.extraArgs)+8)
-	args = append(args, a.extraArgs...)
+	// A per-run selector model wins over agent_args_override: drop the user's
+	// competing --model rather than rely on copilot's duplicate-flag rule.
+	extraArgs := a.extraArgs
+	if a.model != "" {
+		extraArgs = dropModelArgs(extraArgs, copilotModelFlags)
+	}
+	args := make([]string, 0, len(extraArgs)+10)
+	args = append(args, extraArgs...)
+	if a.model != "" {
+		args = append(args, "--model", a.model)
+	}
 	args = append(args,
 		"-p", prompt,
 		"--output-format", "json",

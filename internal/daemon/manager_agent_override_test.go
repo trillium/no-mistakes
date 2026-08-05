@@ -36,3 +36,39 @@ func TestApplyRunAgentOverride(t *testing.T) {
 		}
 	})
 }
+
+// A per-run override carrying a model is persisted verbatim in
+// runs.agent_override and replayed through the same path on recovery, so a
+// mid-run daemon restart rebuilds the SAME model, not just the same harness.
+func TestApplyRunAgentOverride_ModelSurvivesRecovery(t *testing.T) {
+	cases := []struct {
+		override string
+		harness  types.AgentName
+		model    string
+	}{
+		{"opencode:github-copilot/gpt-4.1", types.AgentOpenCode, "github-copilot/gpt-4.1"},
+		{"claude:opus", types.AgentClaude, "opus"},
+		{"  codex:gpt-5.4  ", types.AgentCodex, "gpt-5.4"},
+		{"acp:gemini", "acp:gemini", ""},
+		{"codex", types.AgentCodex, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.override, func(t *testing.T) {
+			// The recovery path (prepareRecoveredRun) applies the persisted
+			// override to a freshly loaded config and then resolves it.
+			cfg := &config.Config{Agent: types.AgentClaude}
+			applyRunAgentOverride(cfg, tc.override)
+			if err := cfg.ResolveAgent(t.Context(), func(bin string) (string, error) {
+				return "/usr/local/bin/" + bin, nil
+			}); err != nil {
+				t.Fatalf("ResolveAgent: %v", err)
+			}
+			if cfg.Agent != tc.harness {
+				t.Fatalf("recovered harness = %q, want %q", cfg.Agent, tc.harness)
+			}
+			if got := cfg.AgentModelFor(tc.harness); got != tc.model {
+				t.Fatalf("recovered model = %q, want %q", got, tc.model)
+			}
+		})
+	}
+}

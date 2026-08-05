@@ -12,8 +12,16 @@ import (
 type opencodeAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	// providerID/modelID are the split form of the per-run model from an
+	// `--agent opencode:<provider>/<model>` selector, both empty when none was
+	// chosen. opencode is driven over HTTP, so the model is not a CLI flag: it
+	// rides in each message body (see sendMessage). With both empty, the body
+	// carries no model field and opencode uses its own configured default,
+	// exactly as before.
+	providerID string
+	modelID    string
+	mu         sync.Mutex
+	server     *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }

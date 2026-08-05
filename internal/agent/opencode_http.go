@@ -20,7 +20,14 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
-	args := buildOpencodeServeArgs(a.extraArgs, port)
+	extraArgs := a.extraArgs
+	if a.modelID != "" {
+		// The per-message model below is authoritative, but drop a competing
+		// server-level --model from agent_args_override anyway so the two can
+		// never disagree about what this run selected.
+		extraArgs = dropModelArgs(extraArgs, opencodeServeModelFlags)
+	}
+	args := buildOpencodeServeArgs(extraArgs, port)
 	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
@@ -81,10 +88,25 @@ func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) 
 	return resp.Body, nil
 }
 
-func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, prompt string, schema json.RawMessage) (*opencodeMessageResponse, error) {
+// opencodeMessageBody builds the POST /session/{sessionID}/message request
+// body.
+//
+// The model is a request-body field here, not a CLI flag: opencode is driven
+// over HTTP, so `--agent opencode:<provider>/<model>` has to travel with each
+// message. opencode's schema takes it as an object of {providerID, modelID},
+// both required - verified against the running server's own OpenAPI document
+// (GET /doc) on opencode 1.15.3. Omitting the field entirely leaves opencode on
+// its configured default, which is the pre-existing behavior.
+func opencodeMessageBody(a *opencodeAgent, prompt string, schema json.RawMessage) map[string]any {
 	body := map[string]any{
 		"role":  "user",
 		"parts": []map[string]string{{"type": "text", "text": prompt}},
+	}
+	if a.providerID != "" && a.modelID != "" {
+		body["model"] = map[string]string{
+			"providerID": a.providerID,
+			"modelID":    a.modelID,
+		}
 	}
 	if len(schema) > 0 {
 		body["format"] = map[string]any{
@@ -93,6 +115,11 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 			"retryCount": 2,
 		}
 	}
+	return body
+}
+
+func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, prompt string, schema json.RawMessage) (*opencodeMessageResponse, error) {
+	body := opencodeMessageBody(a, prompt, schema)
 
 	respBytes, err := doJSON(ctx, http.MethodPost, baseURL+"/session/"+sessionID+"/message", nil, body)
 	if err != nil {

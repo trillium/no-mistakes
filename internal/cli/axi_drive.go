@@ -83,6 +83,11 @@ func newAxiRunCmd() *cobra.Command {
 			"when starting a fresh run; reattaching to an in-flight run keeps that run's\n" +
 			"agent. Accepts the same values as the config `agent` field: auto, claude,\n" +
 			"codex, rovodev, opencode, pi, copilot, cursor, or acp:<target>.\n\n" +
+			"Append :<model> to pick the model too - claude:opus, codex:gpt-5.4,\n" +
+			"opencode:github-copilot/gpt-4.1. The selector splits on its FIRST colon, and\n" +
+			"acp: is reserved: acp:<target> stays an ACP bridge target, never a model. A\n" +
+			"model chosen here wins over any --model in agent_args_override. auto, rovodev,\n" +
+			"cursor, and acp:<target> take no model and are rejected with a reason.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -99,9 +104,12 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				if trimmed := strings.TrimSpace(agentOverride); trimmed != "" && !types.ValidAgentSelector(types.AgentName(trimmed)) {
-					return emitError(cmd, 2, fmt.Sprintf("unknown --agent %q", trimmed),
-						"Valid agents: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>")
+				if trimmed := strings.TrimSpace(agentOverride); trimmed != "" {
+					if _, err := types.ParseAgentSelector(trimmed); err != nil {
+						return emitError(cmd, 2, fmt.Sprintf("invalid --agent %q: %s", trimmed, err),
+							"Valid agents: "+types.ValidAgentSelectorHint()+
+								" (e.g. claude:opus, codex:gpt-5.4, opencode:github-copilot/gpt-4.1)")
+					}
 				}
 				return runAxiRun(cmd, autoYes, skipSteps, intent, strings.TrimSpace(agentOverride))
 			})
@@ -110,7 +118,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
-	cmd.Flags().StringVar(&agentOverride, "agent", "", "override the configured pipeline agent for this run only (auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>); does not edit config or restart the daemon")
+	cmd.Flags().StringVar(&agentOverride, "agent", "", "override the configured pipeline agent for this run only (auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>, or <harness>:<model> such as opencode:github-copilot/gpt-4.1); does not edit config or restart the daemon")
 	return cmd
 }
 

@@ -253,6 +253,13 @@ type Options struct {
 	// from config.Config; adapters without a verified suppression knob ignore it
 	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
+	// Model is the per-run model named by a <harness>:<model> selector, empty
+	// when the selector named none. Each adapter maps it to its own harness's
+	// real model channel (see internal/agent/model.go). Passing a model to a
+	// harness with no model channel is an error, not a silent drop:
+	// types.ParseAgentSelector already refuses those selectors, and
+	// NewWithOptions refuses again so no caller can bypass the grammar.
+	Model string
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -791,25 +798,43 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
+	// name is always a BARE harness here: config.ResolveAgent splits every
+	// <harness>:<model> selector and hands the model over in opts.Model. An
+	// ACP selector (acp:<target> or the cursor alias) still arrives whole,
+	// which is why the ACP branch stays first and unchanged.
+	model := strings.TrimSpace(opts.Model)
+	if model != "" {
+		if reason, unsupported := types.AgentModelUnsupportedReason(name); unsupported {
+			return nil, fmt.Errorf("agent %q does not accept a model: %s", name, reason)
+		}
+	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
 		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand}, nil
 	}
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs, model: model, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs, model: model, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
+		providerID, modelID := "", ""
+		if model != "" {
+			provider, id, ok := types.SplitOpenCodeModel(model)
+			if !ok {
+				return nil, fmt.Errorf("invalid opencode model %q: opencode model ids are <provider>/<model> (e.g. github-copilot/gpt-4.1)", model)
+			}
+			providerID, modelID = provider, id
+		}
+		return &opencodeAgent{bin: bin, extraArgs: extraArgs, providerID: providerID, modelID: modelID}, nil
 	case types.AgentPi:
-		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &piAgent{bin: bin, extraArgs: extraArgs, model: model, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCopilot:
-		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &copilotAgent{bin: bin, extraArgs: extraArgs, model: model}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: %s (set 'agent' in ~/.no-mistakes/config.yaml)", name, types.ValidAgentSelectorHint())
 	}
 }
 

@@ -373,8 +373,14 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	Agent                types.AgentName
-	Agents               []types.AgentName
+	Agent  types.AgentName
+	Agents []types.AgentName
+	// AgentModels maps a bare harness name to the per-run model its selector
+	// named (`claude:opus`, `opencode:github-copilot/gpt-4.1`). It is derived
+	// by ResolveAgent, which splits every configured selector into its harness
+	// and model so everything downstream keeps seeing bare harness names
+	// exactly as before. Empty when no selector named a model.
+	AgentModels          map[types.AgentName]string
 	ACPXPath             string
 	ACPRegistryOverrides map[string]string
 	AgentPathOverride    map[string]string
@@ -706,7 +712,14 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 // identity, and kept as fallbacks. The lookPath function should behave like
 // exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
-	candidates := c.configuredAgents()
+	// Split <harness>:<model> selectors before any probing so every step below
+	// (binary lookup, ACP handling, dedup, adapter construction) keeps working
+	// on bare harness names. The models travel separately in c.AgentModels.
+	candidates, models, err := splitAgentSelectors(c.configuredAgents())
+	if err != nil {
+		return err
+	}
+	c.AgentModels = models
 	if len(candidates) <= 1 {
 		c.Agent = firstAgent(candidates)
 		c.Agents = copyAgents(candidates)
@@ -738,6 +751,47 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	c.Agent = resolved[0]
 	c.Agents = resolved
 	return nil
+}
+
+// splitAgentSelectors parses every configured selector into its harness and
+// optional model. The returned candidates are bare harness names in the
+// configured order; the map is keyed by harness with first-wins semantics,
+// matching resolveAgentList's existing first-wins dedup by resolved identity
+// (a second `claude:...` entry is already dropped there, so its model would
+// never be used).
+func splitAgentSelectors(configured []types.AgentName) ([]types.AgentName, map[types.AgentName]string, error) {
+	if len(configured) == 0 {
+		return nil, nil, nil
+	}
+	candidates := make([]types.AgentName, 0, len(configured))
+	var models map[types.AgentName]string
+	for _, selector := range configured {
+		parsed, err := types.ParseAgentSelector(string(selector))
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid agent %q: %w", selector, err)
+		}
+		candidates = append(candidates, parsed.Harness)
+		if parsed.Model == "" {
+			continue
+		}
+		if models == nil {
+			models = map[types.AgentName]string{}
+		}
+		if _, seen := models[parsed.Harness]; !seen {
+			models[parsed.Harness] = parsed.Model
+		}
+	}
+	return candidates, models, nil
+}
+
+// AgentModelFor returns the per-run model configured for a resolved harness,
+// or "" when the selector named none. Callers pass it to the adapter through
+// agent.Options.Model.
+func (c *Config) AgentModelFor(name types.AgentName) string {
+	if c.AgentModels == nil {
+		return ""
+	}
+	return c.AgentModels[name]
 }
 
 func (c *Config) configuredAgents() []types.AgentName {
