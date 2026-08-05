@@ -376,3 +376,49 @@ func TestPipeline_ConfiguredLintCommandStaysFirstClassGate(t *testing.T) {
 		t.Fatalf("exit code = %d, want 3", outcome.ExitCode)
 	}
 }
+
+// TestDocumentStep_CarriesSuppressionDirectiveDisciplineInBothModes pins the
+// suppression contract on the document step. Both modes matter, and the
+// document-ONLY mode is the one that actually regressed: with a deterministic
+// commands.lint configured the combined pass never runs, yet the doc pass
+// still rewrote a //lint:ignore into a //nolint - a suppression directive is
+// syntactically a comment, so "only doc comments" did not exclude it.
+func TestDocumentStep_CarriesSuppressionDirectiveDisciplineInBothModes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		cmds  config.Commands
+		combi bool
+	}{
+		{name: "document_only", cmds: config.Commands{Lint: "make lint"}, combi: false},
+		{name: "combined_document_lint", cmds: config.Commands{}, combi: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+				},
+			}
+			sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, tc.cmds)
+			if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			prompt := ag.calls[0].Prompt
+			assertSuppressionDiscipline(t, "document ("+tc.name+")", prompt)
+
+			if tc.combi != strings.Contains(prompt, "Combined lint duty") {
+				t.Fatalf("combined-lint duty presence = %v, want %v", !tc.combi, tc.combi)
+			}
+			// The document-only pass must additionally be told that a
+			// suppression directive is not a doc comment it may edit.
+			if !tc.combi && !strings.Contains(prompt, "A lint suppression directive is tool configuration, not a doc comment - never edit one here.") {
+				t.Errorf("expected document-only prompt to exclude suppression directives from doc-comment edits\nprompt:\n%s", prompt)
+			}
+		})
+	}
+}

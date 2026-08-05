@@ -201,3 +201,70 @@ func TestLintStep_NoConfiguredLint_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 		t.Error("expected no-config lint prompt to report only unresolved issues")
 	}
 }
+
+// suppressionDisciplineClauses are the load-bearing sentences of
+// lintSuppressionDiscipline. Every prompt that can edit a lint suppression
+// directive must carry them: rewriting //lint:ignore into //nolint (or any
+// other cross-tool swap) silently reintroduces every finding the original
+// suppressed, and the pipeline then reports it as a fix because nothing
+// re-ran the tool being silenced (parlay c14d7df, robots-ri95).
+var suppressionDisciplineClauses = []string{
+	"Suppression-directive discipline:",
+	"tool-specific syntax, not a comment style",
+	"//lint:ignore (staticcheck), //nolint (golangci-lint)",
+	"Never rewrite, translate, or reformat an existing suppression directive into another tool's syntax",
+	"must be validated by re-running that tool and confirming the finding is still suppressed",
+	"leave the existing directive unchanged and report a finding instead",
+	"add the second tool's directive alongside the first; never replace one with the other",
+	"Never state in a summary or commit message that a suppression was fixed unless you re-ran the tool",
+}
+
+func assertSuppressionDiscipline(t *testing.T, label, prompt string) {
+	t.Helper()
+	for _, want := range suppressionDisciplineClauses {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected %s prompt to contain %q\nprompt:\n%s", label, want, prompt)
+		}
+	}
+}
+
+// TestLintStep_AgentPathsCarrySuppressionDirectiveDiscipline pins the
+// suppression contract on both lint-step agent paths: the agent-driven lint
+// pass (no commands.lint) and the fix-mode repair pass.
+func TestLintStep_AgentPathsCarrySuppressionDirectiveDiscipline(t *testing.T) {
+	t.Parallel()
+
+	t.Run("agent_driven_lint", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"lint clean"}`)}, nil
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		if _, err := (&LintStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		assertSuppressionDiscipline(t, "agent-driven lint", ag.calls[0].Prompt)
+	})
+
+	t.Run("fix_mode", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		gitCmd(t, dir, "checkout", "--detach", headSHA)
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "exit 0"})
+		sctx.Fixing = true
+		if _, err := (&LintStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		assertSuppressionDiscipline(t, "lint fix-mode", ag.calls[0].Prompt)
+	})
+}
