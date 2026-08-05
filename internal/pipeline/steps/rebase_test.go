@@ -287,6 +287,11 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "checkout", "feature")
 
+	// git 2.47+ autostashes dirty changes by default, which would make the
+	// rebase succeed and defeat the test's intent. Disable it explicitly so a
+	// dirty working tree still causes the rebase to fail without conflicts.
+	gitCmd(t, dir, "config", "rebase.autoStash", "false")
+
 	// Dirty the working tree so rebase fails without conflict
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
 
@@ -335,6 +340,10 @@ func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.
 	gitCmd(t, dir, "commit", "-m", "main advance")
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "checkout", "feature")
+
+	// git 2.47+ autostashes dirty changes by default; disable so that dirty
+	// working tree still causes a non-conflict rebase failure as intended.
+	gitCmd(t, dir, "config", "rebase.autoStash", "false")
 
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
 	rebaseMergeDir := gitCmd(t, dir, "rev-parse", "--git-path", "rebase-merge")

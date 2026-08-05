@@ -116,7 +116,20 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 
 // claudeRetryClassifier retries both transient API errors and the
 // no-structured-output case that the existing loop already handled.
+// claudeTextNotJSONError (prose reply with a live session) is NOT retried:
+// runOnce already did a single in-session repair turn and returned either a
+// repaired result or a claudeProseWrappedError. claudeProseWrappedError is also
+// excluded: the model's own words may contain transient needles and must not
+// classify the failure as a retriable network blip.
 func claudeRetryClassifier(err error) (string, bool) {
+	var textNotJSON *claudeTextNotJSONError
+	if errors.As(err, &textNotJSON) {
+		return "", false
+	}
+	var prose *claudeProseWrappedError
+	if errors.As(err, &prose) {
+		return "", false
+	}
 	if errors.Is(err, errNoStructuredOutput) {
 		return "missing structured output", true
 	}
