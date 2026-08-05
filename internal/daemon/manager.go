@@ -156,6 +156,12 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
+	// Reapply the run's persisted per-run agent override so recovery rebuilds the
+	// agent with the same selector the run started with, rather than the
+	// currently configured agent.
+	if run.AgentOverride != nil {
+		applyRunAgentOverride(cfg, *run.AgentOverride)
+	}
 	ag, err := newPipelineAgent(ctx, cfg, exec.LookPath)
 	if err != nil {
 		return nil, err
@@ -225,6 +231,23 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+}
+
+// applyRunAgentOverride replaces the configured agent selector on cfg with a
+// per-run override (from `axi run --agent`) when one is set. A blank override
+// leaves cfg untouched so the run uses the configured agent. It sets both Agent
+// and Agents so ResolveAgent treats the override as the single configured agent,
+// including "auto". Repo config carrying an agent list (Agents) is intentionally
+// discarded for an overridden run: the override is the operator's explicit,
+// single choice for this run.
+func applyRunAgentOverride(cfg *config.Config, override string) {
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return
+	}
+	name := types.AgentName(override)
+	cfg.Agent = name
+	cfg.Agents = []types.AgentName{name}
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
@@ -598,13 +621,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.Agent)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, agentOverride string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -670,7 +693,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, agentOverride)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -690,14 +713,14 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, agentOverride string) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, agentOverride)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, agentOverride string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -751,6 +774,18 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+
+	// Persist a per-run agent override before any agent is built so a daemon
+	// restart recovers the same selector (see prepareRecoveredRun) instead of
+	// silently reverting to the configured agent.
+	agentOverride = strings.TrimSpace(agentOverride)
+	if agentOverride != "" {
+		if err := m.db.SetRunAgentOverride(run.ID, agentOverride); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("persist agent override: %s", err))
+			trackStartFailure("persist_agent_override")
+			return "", fmt.Errorf("persist agent override: %w", err)
+		}
 	}
 
 	// Create worktree from the gate bare repo.
@@ -843,6 +878,14 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+
+	// A per-run --agent override replaces the configured agent for this run. It
+	// is applied here, after the trusted-config merge, because it is a local,
+	// same-user request over the daemon socket (the same trust level as the
+	// global config file) - not pushed-branch content. The default-branch trust
+	// machinery above protects against a *contributor* choosing the agent; it
+	// does not constrain the maintainer's own explicit per-run choice.
+	applyRunAgentOverride(cfg, agentOverride)
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

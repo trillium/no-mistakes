@@ -73,6 +73,12 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	// Agent, when set, is a per-run pipeline agent selector supplied by the
+	// local driver via `axi run --agent`. It overrides the configured agent for
+	// this run only and never changes ~/.no-mistakes/config.yaml. It carries the
+	// same trust as the global config file (a local, same-user request over the
+	// daemon socket), not pushed-branch content.
+	Agent string `json:"agent,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -128,6 +134,10 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	// Agent, when set, is a per-run pipeline agent selector supplied by the
+	// local driver via `axi run --agent`. It overrides the configured agent for
+	// this run only. See PushReceivedParams.Agent for the trust boundary.
+	Agent string `json:"agent,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

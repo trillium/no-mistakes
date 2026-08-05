@@ -57,11 +57,17 @@ type Run struct {
 	IntentSource    *string
 	IntentSessionID *string
 	IntentScore     *float64
-	CreatedAt       int64
-	UpdatedAt       int64
+	// AgentOverride, when non-nil, is the pipeline agent selector chosen for
+	// this run only via `axi run --agent`, overriding the configured agent. It
+	// is persisted so a daemon restart rebuilds the run's agent with the same
+	// selector rather than silently reverting to the configured one. Nil means
+	// the run uses the configured agent.
+	AgentOverride *string
+	CreatedAt     int64
+	UpdatedAt     int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, agent_override, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -72,7 +78,7 @@ func scanRun(row interface {
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
-		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
+		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.AgentOverride,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -519,6 +525,22 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update run intent: %w", err)
+	}
+	return nil
+}
+
+// SetRunAgentOverride persists the per-run pipeline agent selector chosen via
+// `axi run --agent`. A blank selector clears any override (the run falls back to
+// the configured agent). It is stored right after the run is created so a daemon
+// restart can rebuild the run's agent with the same selector.
+func (d *DB) SetRunAgentOverride(id, selector string) error {
+	var value *string
+	if trimmed := strings.TrimSpace(selector); trimmed != "" {
+		value = &trimmed
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET agent_override = ?, updated_at = ? WHERE id = ?`, value, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run agent override: %w", err)
 	}
 	return nil
 }

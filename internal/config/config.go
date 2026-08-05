@@ -542,6 +542,8 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
+# To pick a different agent for a single run without editing this file or
+# restarting the daemon, pass: no-mistakes axi run --agent <name>
 agent: auto
 
 # Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
