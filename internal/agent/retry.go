@@ -146,14 +146,34 @@ var transientNeedles = []struct {
 	{"unexpected eof", "unexpected eof"},
 }
 
+// neverTransientError marks an error whose message quotes agent output, so
+// classifyTransient must not read it. Classification is substring matching, and
+// an error that carries a model's own words back to the operator would
+// otherwise let the model decide the retry: a reply that happens to contain
+// "connection refused" or "rate_limited" reads as a network failure, and the
+// run pays for another full attempt on a reply that was simply the wrong shape.
+// The message is unchanged - this only says "do not classify me".
+type neverTransientError struct{ err error }
+
+func neverTransient(err error) error { return &neverTransientError{err: err} }
+
+func (e *neverTransientError) Error() string { return e.err.Error() }
+
+func (e *neverTransientError) Unwrap() error { return e.err }
+
 // classifyTransient reports whether an error message looks like a transient
 // API or network failure. It deliberately ignores ctx cancellation/deadline
-// errors so explicit cancellation is never silently retried.
+// errors so explicit cancellation is never silently retried, and errors marked
+// neverTransient so quoted agent output cannot trigger a retry.
 func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", false
+	}
+	var quotesAgentOutput *neverTransientError
+	if errors.As(err, &quotesAgentOutput) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())

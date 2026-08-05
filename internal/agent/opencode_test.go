@@ -532,6 +532,10 @@ type opencodeProseRepairServer struct {
 	messageBodies []string
 	streamTexts   []string
 	messageBodyFn func(turn int) string
+	// messageStatusFn optionally fails a given turn's message POST with an HTTP
+	// status, so a test can make the repair turn fail in transport rather than
+	// in formatting. nil means every turn succeeds.
+	messageStatusFn func(turn int) int
 }
 
 func (s *opencodeProseRepairServer) handler(t *testing.T) http.HandlerFunc {
@@ -572,6 +576,13 @@ func (s *opencodeProseRepairServer) handler(t *testing.T) http.HandlerFunc {
 			turn := len(s.messageBodies)
 			s.messageBodies = append(s.messageBodies, string(body))
 			s.mu.Unlock()
+			if s.messageStatusFn != nil {
+				if status := s.messageStatusFn(turn); status != 0 && status != http.StatusOK {
+					w.WriteHeader(status)
+					fmt.Fprint(w, "upstream rejected the follow-up")
+					return
+				}
+			}
 			fmt.Fprint(w, s.messageBodyFn(turn))
 
 		default:
@@ -669,7 +680,10 @@ func TestOpencodeAgent_ProseReplyAfterFailedRepairNamesTheCause(t *testing.T) {
 	mock := &opencodeProseRepairServer{
 		streamTexts: []string{
 			"Run npm install in the web/ directory first.",
-			"I already told you: run npm install --prefix web.",
+			// The prose deliberately contains a transient needle: the model's own
+			// words must not be able to classify the failure as a network blip and
+			// buy itself another full paid attempt.
+			"I already told you: run npm install --prefix web, the connection refused nothing.",
 		},
 		messageBodyFn: func(turn int) string {
 			return fmt.Sprintf(`{"info":{"id":"msg%d","role":"assistant"},"parts":[]}`, turn)
@@ -700,6 +714,59 @@ func TestOpencodeAgent_ProseReplyAfterFailedRepairNamesTheCause(t *testing.T) {
 	}
 	if got := len(mock.sentPrompts(t)); got != 2 {
 		t.Errorf("expected exactly one repair turn (2 messages), got %d", got)
+	}
+	if label, retry := classifyTransient(err); retry {
+		t.Errorf("prose quoting a transient needle must not be retried, got label %q", label)
+	}
+}
+
+// TestOpencodeAgent_FailedRepairTransportIsNotReportedAsProse asserts that when
+// the repair turn cannot be delivered at all, the step reports that transport
+// failure rather than blaming the model's formatting. Two reasons: an operator
+// told "the model answered in prose" would go swap models while the real
+// problem is the connection, and classifyTransient matches on the error string,
+// so a transport failure must keep its own wording to stay retriable. The
+// model's prose is deliberately kept out of that string - it is arbitrary
+// output and must not be able to inject a transient needle.
+func TestOpencodeAgent_FailedRepairTransportIsNotReportedAsProse(t *testing.T) {
+	const prose = "Everything looks fine, no connection refused anywhere."
+	mock := &opencodeProseRepairServer{
+		streamTexts: []string{prose, ""},
+		messageBodyFn: func(turn int) string {
+			return fmt.Sprintf(`{"info":{"id":"msg%d","role":"assistant"},"parts":[]}`, turn)
+		},
+		messageStatusFn: func(turn int) int {
+			if turn == 1 {
+				return http.StatusBadRequest
+			}
+			return http.StatusOK
+		},
+	}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"risk_level":{"type":"string"}},"required":["risk_level"]}`),
+	})
+	if err == nil {
+		t.Fatalf("expected an error, got result %+v", result)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "opencode message:") {
+		t.Errorf("expected the transport failure to keep its own wording so classifyTransient can see it, got %q", msg)
+	}
+	if !strings.Contains(msg, "follow-up could not be sent") {
+		t.Errorf("expected the error to say the follow-up could not be sent, got %q", msg)
+	}
+	if strings.Contains(msg, prose) {
+		t.Errorf("model prose must not reach the classified error string, got %q", msg)
+	}
+	if label, retry := classifyTransient(err); retry {
+		t.Errorf("a 400 on the repair turn must not be classified transient, got label %q", label)
 	}
 }
 

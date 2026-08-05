@@ -99,7 +99,14 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	}
 	repairResp, repairErr := a.sendTurn(ctx, baseURL, sessionID, buildOpencodeRepairPrompt(opts.JSONSchema), opts, state)
 	if repairErr != nil {
-		return nil, opencodeProseError(parseErr)
+		// The repair turn failed to complete at all, which is a transport
+		// failure and not the model's formatting. Return that error so
+		// classifyTransient still sees its own wording (a dead server here is
+		// worth a retry) and so an operator is not told the model answered in
+		// prose when the real problem was the connection. The prose reply's own
+		// text is deliberately left out: it is arbitrary model output and must
+		// not be able to put a transient needle into the classified string.
+		return nil, fmt.Errorf("opencode answered in prose and the JSON-only follow-up could not be sent: %w", repairErr)
 	}
 	repaired, repairParseErr := opencodeTurnResult(repairResp, opts.JSONSchema, state)
 	if repairParseErr == nil {
@@ -313,12 +320,16 @@ func opencodeAssistantError(resp *opencodeMessageResponse) error {
 // json.Unmarshal text ("invalid character 'N' looking for beginning of value")
 // describes the symptom of a step two minutes in and reads like a daemon
 // defect rather than "the model answered in prose".
+// It quotes the model's reply, so it is marked neverTransient: without that, a
+// reply containing "connection refused" would be classified as a network blip,
+// and the retry would tear down and restart the opencode server to pay for a
+// second full run of a step the model simply answered in the wrong shape.
 func opencodeProseError(err error) error {
-	return fmt.Errorf(
+	return neverTransient(fmt.Errorf(
 		"opencode answered in prose instead of the JSON this step requires, and a JSON-only follow-up did not recover it "+
 			"(the model may be too weak for this step; try a stronger --agent opencode:<provider>/<model>): %w",
 		err,
-	)
+	))
 }
 
 func (a *opencodeAgent) Close() error {
