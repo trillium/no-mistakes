@@ -162,7 +162,7 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeAgentCommand("claude", cmd)
 	if err != nil {
 		return nil, TokenUsage{}, 0, fmt.Errorf("claude start: %w", err)
 	}

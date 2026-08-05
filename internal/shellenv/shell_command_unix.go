@@ -4,6 +4,7 @@ package shellenv
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -81,11 +82,19 @@ func StartShellCommand(cmd *exec.Cmd) error {
 // It is safe to call unconditionally after Wait: the group persists only while
 // a member is alive, so when the leader exited cleanly with no survivors the
 // kill is a harmless no-op (ESRCH). A nil or never-started command is a no-op.
-func TerminateShellCommandGroup(cmd *exec.Cmd) {
+//
+// A nil return means the group is provably gone: either SIGKILL was delivered
+// (it is uncatchable, so every member dies) or the group no longer existed.
+// A non-nil return means survivors may remain, which is what lets a caller
+// holding a crash-recovery record decide to keep it rather than drop it.
+func TerminateShellCommandGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
-		return
+		return nil
 	}
 	// Negative PID targets the whole group (Setpgid made the leader's PID the
 	// group ID). errors.Is(ESRCH) is the expected, benign "no survivors" case.
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("sigkill process group %d: %w", cmd.Process.Pid, err)
+	}
+	return nil
 }

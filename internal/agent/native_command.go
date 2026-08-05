@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -11,8 +12,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+// terminateShellCommandGroupFunc is a seam: the group kill has no in-process
+// failure mode a test can provoke, but the record-retention branch it guards is
+// exactly the behaviour worth pinning.
+var terminateShellCommandGroupFunc = shellenv.TerminateShellCommandGroup
+
 type nativeAgentCommand struct {
 	cmd            *exec.Cmd
+	pidFile        string
 	stdout         *nativeAgentPipe
 	stderr         *nativeAgentPipe
 	waitCh         chan error
@@ -47,7 +54,21 @@ func (p *nativeAgentPipe) markDone() {
 	p.doneOnce.Do(p.done)
 }
 
-func startNativeAgentCommand(cmd *exec.Cmd) (*nativeAgentCommand, error) {
+// startNativeAgentCommand starts a native agent leader that was already
+// prepared with shellenv.ConfigureShellCommand, and records it for crash
+// recovery.
+//
+// In-process reaping (cmd.Cancel on cancellation, terminate on every exit
+// path) covers only the case where our own Go code still gets to run. When the
+// daemon itself dies uncatchably - the OOM kill described on
+// TerminateShellCommandGroup, a `kill -9`, or a session teardown that signals
+// the daemon but not its descendants - nothing signals the agent's process
+// group, so the leader and everything it spawned reparent to init and run
+// forever. Managed servers already survived that through an on-disk PID record
+// reaped by the next daemon start; native agents did not, and their trees are
+// the ones that spawn test runners. agentName tags the record so that reap can
+// name what it killed.
+func startNativeAgentCommand(agentName string, cmd *exec.Cmd) (*nativeAgentCommand, error) {
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -72,7 +93,20 @@ func startNativeAgentCommand(cmd *exec.Cmd) (*nativeAgentCommand, error) {
 	_ = stderrW.Close()
 
 	started := &nativeAgentCommand{
-		cmd:            cmd,
+		cmd: cmd,
+		// Written immediately after Start so the window in which a daemon
+		// death leaves an untracked tree is as small as the managed-server
+		// path's. Empty when PID tracking is disabled (no daemon identity),
+		// which makes every use below a no-op.
+		pidFile: writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
+			PID:            cmd.Process.Pid,
+			Owner:          currentServerPIDOwner(),
+			OwnerPID:       os.Getpid(),
+			OwnerStartedAt: CurrentProcessStartedAt(),
+			Agent:          agentName,
+			Bin:            cmd.Path,
+			StartedAt:      time.Now().UTC(),
+		}),
 		waitCh:         make(chan error, 1),
 		remainingPipes: 2,
 		pipesDone:      make(chan struct{}),
@@ -122,9 +156,23 @@ func (c *nativeAgentCommand) waitForPipes(waitErr error) error {
 	}
 }
 
+// terminate SIGKILLs the leader's whole process group and drops the
+// crash-recovery record only once that kill reports success. The order and the
+// condition both matter: the record must outlive every path on which the group
+// might still have survivors. A successful group kill is proof there are none -
+// SIGKILL is uncatchable - so the record has nothing left to describe. A failed
+// one is the opposite: descendants may still be running and this record is the
+// only handle a future daemon has on them, so it stays. Keeping it costs
+// nothing when the leader did die anyway, because reapOrphanedServers discards
+// records whose PID is dead or has been reused without signalling anything.
 func (c *nativeAgentCommand) terminate() {
 	c.terminateOnce.Do(func() {
-		shellenv.TerminateShellCommandGroup(c.cmd)
+		if err := terminateShellCommandGroupFunc(c.cmd); err != nil {
+			slog.Warn("terminate native agent process group; keeping pid record for crash recovery",
+				"pid", c.pid(), "pid_file", c.pidFile, "error", err)
+			return
+		}
+		removeServerPIDFile(c.pidFile)
 	})
 }
 
