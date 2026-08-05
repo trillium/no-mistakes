@@ -151,8 +151,8 @@ A selector model beats a model set in [`agent_args_override`](/no-mistakes/refer
 The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the per-harness delivery table and the precedence rule.
 
 Steps like review and test require a structured JSON answer, and a weaker model may answer them conversationally instead.
-The pipeline asks once more for the JSON alone before giving up, and if that still comes back as prose the step fails naming the model as the cause rather than a parse error.
-Pick a stronger model for the run when you see that.
+The pipeline asks once more for the JSON alone before giving up, and if that still comes back as prose the step fails saying the reply was prose instead of surfacing a raw parse error.
+That failure suggests choosing a stronger `--agent opencode:<provider>/<model>`; take the suggestion, because the run will keep failing the same way on the same model.
 
 ## Where agent choice matters most
 

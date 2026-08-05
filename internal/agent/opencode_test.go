@@ -536,6 +536,11 @@ type opencodeProseRepairServer struct {
 	// status, so a test can make the repair turn fail in transport rather than
 	// in formatting. nil means every turn succeeds.
 	messageStatusFn func(turn int) int
+	// sessionCreates counts POST /session. The mock answers every one with the
+	// same id, so this is the only way a test can tell "the repair turn reused
+	// the session" from "the repair turn opened a second one and lost the
+	// context the model had already built".
+	sessionCreates int
 }
 
 func (s *opencodeProseRepairServer) handler(t *testing.T) http.HandlerFunc {
@@ -544,6 +549,9 @@ func (s *opencodeProseRepairServer) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			s.mu.Lock()
+			s.sessionCreates++
+			s.mu.Unlock()
 			fmt.Fprint(w, `{"id":"s1"}`)
 
 		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
@@ -663,6 +671,15 @@ func TestOpencodeAgent_ProseReplyIsRepairedInSession(t *testing.T) {
 	prompts := mock.sentPrompts(t)
 	if len(prompts) != 2 {
 		t.Fatalf("expected exactly one repair turn (2 messages), got %d", len(prompts))
+	}
+	// The repair turn is only worth doing because the model keeps the context it
+	// already built; a second session would throw that away and ask a cold model
+	// for the JSON of work it never did.
+	mock.mu.Lock()
+	sessions := mock.sessionCreates
+	mock.mu.Unlock()
+	if sessions != 1 {
+		t.Errorf("expected the repair turn to reuse the one session, got %d session creates", sessions)
 	}
 	repair := prompts[1]
 	for _, want := range []string{"was prose, not JSON", "do not call any tools", "must match this schema exactly"} {
