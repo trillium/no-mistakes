@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -289,11 +290,11 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title chore: update pull request --body") {
-		t.Fatalf("expected fallback PR title to make no scope claim, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "--title feat: add feature --body") {
+		t.Fatalf("expected fallback PR title to come from the branch commit subject, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "--title feat: add feature") {
-		t.Fatalf("expected fallback PR title to exclude commit-history scope, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "chore: update pull request") {
+		t.Fatalf("expected fallback PR title to avoid the placeholder when a commit subject exists, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
 		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
@@ -1354,6 +1355,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 
 	content := fallbackPRContent(
 		sctx,
+		"",
 		"A\tinternal/pipeline/steps/pr.go",
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
@@ -1384,6 +1386,94 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 	if content.Title != "chore: update pull request" {
 		t.Fatalf("fallback title = %q, want neutral title", content.Title)
+	}
+}
+
+// fallbackTitleRepo builds a repo whose feature branch carries the operator's
+// own commit first and a pipeline fix commit on top, which is the shape every
+// real run reaches by the time the PR step runs.
+func fallbackTitleRepo(t *testing.T, subjects ...string) (dir, baseSHA, headSHA string) {
+	t.Helper()
+	dir = t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	for i, subject := range subjects {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("change"), 0o644)
+		gitCmd(t, dir, "add", "-A")
+		gitCmd(t, dir, "commit", "-m", subject)
+	}
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	return dir, baseSHA, headSHA
+}
+
+func TestFallbackPRContentTitlesFromFirstBranchCommitNotPipelineFixCommit(t *testing.T) {
+	t.Parallel()
+	const authored = "Stop the tangle guard from alarming on a held default branch"
+	dir, baseSHA, headSHA := fallbackTitleRepo(t, authored, "no-mistakes(review): rename a helper")
+
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+
+	content := fallbackPRContent(sctx, baseSHA, "A\tf0.txt\nA\tf1.txt", "", "", "", 0)
+
+	if !strings.Contains(content.Title, authored) {
+		t.Fatalf("fallback title = %q, want it to carry the authored commit subject %q", content.Title, authored)
+	}
+	if strings.Contains(content.Title, "no-mistakes(review)") {
+		t.Fatalf("fallback title = %q, want the operator's subject rather than a pipeline fix commit", content.Title)
+	}
+	if content.Title == genericFallbackPRTitle {
+		t.Fatalf("fallback title = %q, want a real subject when the branch has one", content.Title)
+	}
+	if !conventional.IsTitle(content.Title) {
+		t.Fatalf("fallback title = %q, want conventional commit format", content.Title)
+	}
+	// The body stays scoped to the final diff; only the title reads history.
+	if strings.Contains(content.Body, authored) {
+		t.Fatalf("fallback body should stay scoped to the final diff, got:\n%s", content.Body)
+	}
+}
+
+func TestFallbackPRContentAlreadyConventionalSubjectSurvivesVerbatim(t *testing.T) {
+	t.Parallel()
+	const authored = "fix(pipeline): keep the PR title readable"
+	dir, baseSHA, headSHA := fallbackTitleRepo(t, authored)
+
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+
+	content := fallbackPRContent(sctx, baseSHA, "A\tf0.txt", "", "", "", 0)
+
+	if content.Title != authored {
+		t.Fatalf("fallback title = %q, want %q unchanged", content.Title, authored)
+	}
+}
+
+func TestFallbackPRContentWarnsLoudlyWhenOnlyThePlaceholderRemains(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := fallbackTitleRepo(t)
+
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, baseSHA, config.Commands{})
+	var logged []string
+	sctx.Log = func(line string) { logged = append(logged, line) }
+
+	content := fallbackPRContent(sctx, baseSHA, "A\tf0.txt", "", "", "", 0)
+
+	if content.Title != genericFallbackPRTitle {
+		t.Fatalf("fallback title = %q, want the placeholder when no commit subject is readable", content.Title)
+	}
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "WARNING") || !strings.Contains(joined, genericFallbackPRTitle) {
+		t.Fatalf("expected the step log to name the placeholder loudly, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "before it merges") {
+		t.Fatalf("expected the step log to tell the agent to fix the title before the merge, got:\n%s", joined)
 	}
 }
 
@@ -1762,8 +1852,14 @@ func TestPRStep_ExistingBranchFallbackUsesMergeBaseFinalDiff(t *testing.T) {
 	if !strings.Contains(ghLog, "A\tsecond.txt") {
 		t.Errorf("expected PR body to include second final-diff path, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "first feature commit") || strings.Contains(ghLog, "second feature commit") {
-		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", ghLog)
+	body := readFakeGHBodyArg(t, logFile)
+	if strings.Contains(body, "first feature commit") || strings.Contains(body, "second feature commit") {
+		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", body)
+	}
+	// The title is the one place commit history is still read, because a
+	// placeholder subject squash-merges onto the default branch permanently.
+	if !strings.Contains(ghLog, "--title chore: first feature commit") {
+		t.Errorf("expected fallback title to come from the branch's first commit subject, got:\n%s", ghLog)
 	}
 }
 
