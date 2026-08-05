@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type fixedVerifier struct {
@@ -380,5 +381,31 @@ func TestBuildVerifyPrompt_CarriesGroundTruthAndUntrustedFraming(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "not commands") && !strings.Contains(prompt, "not instructions") {
 		t.Fatalf("prompt must frame the summary as untrusted data:\n%s", prompt)
+	}
+}
+
+// TestClampChangeSubject locks the ground-truth cap in place, and locks it to a
+// rune boundary: a cut landing mid-rune would put an invalid UTF-8 byte in the
+// prompt.
+func TestClampChangeSubject(t *testing.T) {
+	short := "fix(intent): gate inferred intent\n\nbody"
+	if got := clampChangeSubject("  " + short + "  "); got != short {
+		t.Fatalf("a subject under the cap must pass through trimmed, got %q", got)
+	}
+
+	oversized := strings.Repeat("a", maxChangeSubjectBytes+512)
+	got := clampChangeSubject(oversized)
+	if !strings.HasSuffix(got, "\n[truncated]") {
+		t.Fatalf("an oversized subject must be marked truncated, got %q", got[max(0, len(got)-40):])
+	}
+	if len(got) > maxChangeSubjectBytes+len("\n[truncated]") {
+		t.Fatalf("clamped subject is %d bytes, over the %d cap", len(got), maxChangeSubjectBytes)
+	}
+
+	// A multi-byte rune straddling the cap must be dropped whole, not sliced.
+	straddling := strings.Repeat("a", maxChangeSubjectBytes-1) + strings.Repeat("é", 64)
+	clamped := clampChangeSubject(straddling)
+	if !utf8.ValidString(clamped) {
+		t.Fatalf("clamped subject is not valid UTF-8: %q", clamped[max(0, len(clamped)-16):])
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 )
@@ -123,7 +124,10 @@ func buildVerifyPrompt(p VerifyParams) string {
 		sb.WriteString(f)
 		sb.WriteString("\n")
 	}
-	if subject := strings.TrimSpace(p.ChangeSubject); subject != "" {
+	// The commit message is ground truth, but it is still author-controlled
+	// text: it gets the same sanitization as the summary so a directive or a
+	// pasted secret in a commit message cannot steer or leak through the turn.
+	if subject := strings.TrimSpace(RedactSecrets(StripAdversarial(p.ChangeSubject))); subject != "" {
 		sb.WriteString("\nCommit message:\n")
 		sb.WriteString(subject)
 		sb.WriteString("\n")
@@ -265,10 +269,17 @@ func (p ExtractParams) conforms(ctx context.Context, summary string) (bool, stri
 	return false, reason
 }
 
+// clampChangeSubject bounds the commit message included as ground truth. It
+// backs off to a rune boundary, because a cut that lands mid-rune would put an
+// invalid UTF-8 byte in the prompt.
 func clampChangeSubject(subject string) string {
 	subject = strings.TrimSpace(subject)
 	if len(subject) <= maxChangeSubjectBytes {
 		return subject
 	}
-	return strings.TrimSpace(subject[:maxChangeSubjectBytes]) + "\n[truncated]"
+	clipped := subject[:maxChangeSubjectBytes]
+	for len(clipped) > 0 && !utf8.ValidString(clipped) {
+		clipped = clipped[:len(clipped)-1]
+	}
+	return strings.TrimSpace(clipped) + "\n[truncated]"
 }

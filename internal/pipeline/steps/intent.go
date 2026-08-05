@@ -233,7 +233,9 @@ func headCommitMessage(ctx context.Context, dir, head string) string {
 	if strings.TrimSpace(head) == "" || git.IsZeroSHA(head) {
 		return ""
 	}
-	out, err := git.Run(ctx, dir, "log", "-1", "--format=%s%n%n%b", head)
+	// "--" keeps head positional; a value starting with "-" would otherwise be
+	// read as an option. run.HeadSHA is resolved today, so this is hardening.
+	out, err := git.Run(ctx, dir, "log", "-1", "--format=%s%n%n%b", head, "--")
 	if err != nil {
 		return ""
 	}
