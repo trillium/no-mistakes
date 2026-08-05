@@ -174,7 +174,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+		return fallbackPRContent(sctx, baseSHA, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
 	}
 
 	var content prContent
@@ -200,7 +200,7 @@ Final diff paths and statuses:
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, baseSHA, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -1002,8 +1002,71 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
-	title := "chore: update pull request"
+// genericFallbackPRTitle is the last-resort PR subject. It is only correct
+// when the branch's own commit subjects cannot be read at all, because a
+// squash merge lands the PR title on the default branch verbatim and a
+// placeholder there is permanent and unsearchable.
+const genericFallbackPRTitle = "chore: update pull request"
+
+// maxFallbackPRTitleBytes bounds a derived title well under every provider's
+// subject limit; a commit subject longer than this is already unreadable.
+const maxFallbackPRTitleBytes = 200
+
+// fallbackPRTitle derives a PR title from the branch's own commit subjects,
+// reading the delta oldest-first. The earliest commit is the operator's own
+// work: pipeline fix commits are only ever appended after it, so reading
+// forward from the base never picks up a "no-mistakes(review): ..." subject
+// the way reading the tip did before #605.
+//
+// The fallback BODY deliberately stays scoped to the final diff (#605),
+// because a commit message can describe work a later commit reverted. The
+// TITLE cannot afford the same caution: an empty scope claim in the body is
+// merely uninformative, while a placeholder subject squash-merged onto the
+// default branch makes the commit invisible to anyone searching git log for
+// when a behavior changed, and it is unfixable without rewriting the branch.
+// A slightly broad real subject is still the truth about what this branch set
+// out to do.
+func fallbackPRTitle(sctx *pipeline.StepContext, baseSHA string) string {
+	base := strings.TrimSpace(baseSHA)
+	head := strings.TrimSpace(sctx.Run.HeadSHA)
+	if base == "" || head == "" || git.IsZeroSHA(base) || base == git.EmptyTreeSHA {
+		return ""
+	}
+	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "log", "--reverse", "--no-merges", "--format=%s", base+".."+head)
+	if err != nil {
+		slog.Warn("failed to read branch commit subjects for fallback PR title", "error", err)
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		subject := strings.TrimSpace(line)
+		if subject == "" {
+			continue
+		}
+		title := conventional.TightenTitle(subject)
+		if len(title) > maxFallbackPRTitleBytes {
+			title = strings.TrimSpace(title[:utf8BoundaryBefore(title, maxFallbackPRTitleBytes)])
+		}
+		if title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func fallbackPRContent(sctx *pipeline.StepContext, baseSHA, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
+	title := fallbackPRTitle(sctx, baseSHA)
+	if title == "" {
+		title = genericFallbackPRTitle
+		// Loud on purpose: this subject is squash-merged onto the default
+		// branch as-is, so the driving agent has to see it here - while the
+		// PR is still open - rather than discover it in git log afterward.
+		sctx.Log(fmt.Sprintf("WARNING: PR title generation failed and no branch commit subject could be read, "+
+			"so this PR is titled with the placeholder %q. Set a real title on the PR before it merges - "+
+			"a squash merge lands this subject on %s permanently.", genericFallbackPRTitle, sctx.Repo.DefaultBranch))
+		slog.Warn("PR title fell back to placeholder", "run", sctx.Run.ID, "title", genericFallbackPRTitle)
+	} else {
+		sctx.Log(fmt.Sprintf("PR title generation failed; derived the title from the branch's first commit subject instead: %q", title))
+	}
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
 	if diffSummary == "" {
