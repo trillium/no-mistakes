@@ -10,6 +10,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// lintSuppressionDiscipline bounds what an agent may do to an EXISTING lint
+// suppression directive. A suppression is tool-specific syntax, not a comment
+// style: bare staticcheck honors only its own `//lint:ignore`, while `//nolint`
+// is golangci-lint's. Rewriting one into the other silently reintroduces every
+// finding the original suppressed, and because the pipeline's lint step never
+// re-ran the tool that produced the finding, the regression shipped under a
+// commit message asserting the opposite ("fix //lint:ignore -> //nolint ...").
+// The minimum bar is therefore validation by the tool being silenced: an edit
+// nobody re-ran is not a fix, it is an unverified claim.
+//
+// Rendered into every prompt that may edit lint suppressions - the combined
+// document+lint housekeeping pass (document.go) and both lint-step agent paths.
+const lintSuppressionDiscipline = `Suppression-directive discipline:
+- A lint suppression is tool-specific syntax, not a comment style. //lint:ignore (staticcheck), //nolint (golangci-lint), # noqa (flake8/ruff), # type: ignore (mypy), and eslint-disable are NOT interchangeable.
+- Never rewrite, translate, or reformat an existing suppression directive into another tool's syntax. Swapping one for another reintroduces every finding the original suppressed.
+- Any edit whose purpose is to silence a check from a tool must be validated by re-running that tool and confirming the finding is still suppressed. If you cannot run it, leave the existing directive unchanged and report a finding instead.
+- When a suppression must satisfy more than one tool, add the second tool's directive alongside the first; never replace one with the other.
+- Never state in a summary or commit message that a suppression was fixed unless you re-ran the tool and observed it clean.`
+
 // LintStep runs linters and asks the agent to fix issues.
 type LintStep struct{}
 
@@ -51,6 +70,8 @@ Task:
 - Re-run the relevant checks after fixing.
 - Report only unresolved lint, format, or static-analysis issues as structured findings.
 - If everything is clean or fixed, return an empty findings array.
+
+`+lintSuppressionDiscipline+`
 
 Rules:
 - Do not run tests or broader behavioral validation.
@@ -119,6 +140,8 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+
+`+lintSuppressionDiscipline+`
 
 Rules:
 - Make the smallest correct root-cause fix.

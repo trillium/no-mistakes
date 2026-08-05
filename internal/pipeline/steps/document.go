@@ -57,6 +57,8 @@ Combined lint duty (same pass - no separate lint agent will run):
 - Do not run tests or broader behavioral validation.
 - Report only unresolved lint, format, or static-analysis issues as findings with "category" set to "lint". Do not report lint issues you already fixed.
 
+` + lintSuppressionDiscipline + `
+
 Set "category" on every finding: "documentation" for documentation findings, "lint" for lint findings.`
 
 // housekeepingFindingsSchema extends findingsSchema with the per-finding
@@ -205,7 +207,10 @@ func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePa
 		intro = "Perform the combined documentation and lint housekeeping pass for this change."
 	}
 
-	editRule := "- Only edit documentation files or doc comments. Do not change executable behavior or tests."
+	// A lint suppression directive is syntactically a comment but semantically
+	// tool configuration, so "only doc comments" did not stop the document pass
+	// from rewriting one into another tool's dialect. Name it explicitly.
+	editRule := "- Only edit documentation files or doc comments. Do not change executable behavior or tests. A lint suppression directive is tool configuration, not a doc comment - never edit one here."
 	if combinedLint {
 		editRule = "- Documentation edits must only touch documentation files or doc comments. Lint fixes must be safe, mechanical, and behavior-preserving. Never change functional behavior or tests."
 	}
@@ -242,6 +247,8 @@ Task:
    - Return a finding only for gaps you could not resolve, judgment calls (e.g. ambiguous intent or conflicting docs), or an out-of-scope consolidation worth a follow-up.
    - Do not report gaps you already fixed.
    - If nothing remains, return an empty findings array.%s
+
+`+lintSuppressionDiscipline+`
 
 Rules:
 %s
