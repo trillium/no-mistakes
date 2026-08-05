@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,14 +18,20 @@ import (
 )
 
 // fakeIntentAgent always returns a canned summary - bypasses any real LLM.
-type fakeIntentAgent struct{}
+// The summary must name the file the test actually changed: the conformance
+// gate discards a summary whose only named paths are outside the diff.
+type fakeIntentAgent struct {
+	summary string
+}
 
 func (f *fakeIntentAgent) Name() string { return "fake" }
 func (f *fakeIntentAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-	return &agent.Result{
-		Output: []byte(`{"summary": "user wanted to add Bar() to internal/foo.go"}`),
-		Text:   `{"summary": "user wanted to add Bar() to internal/foo.go"}`,
-	}, nil
+	summary := f.summary
+	if summary == "" {
+		summary = "user wanted to add Bar() to internal_foo.go"
+	}
+	payload := `{"summary": ` + strconv.Quote(summary) + `}`
+	return &agent.Result{Output: []byte(payload), Text: payload}, nil
 }
 func (f *fakeIntentAgent) Close() error { return nil }
 
@@ -240,6 +247,7 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.2, SlackDays: 3}}
 	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+	sctx.Agent = &fakeIntentAgent{summary: "user wanted to add Run() to active.go and drop the obsolete files"}
 
 	outcome, err := (&IntentStep{}).Execute(sctx)
 	if err != nil {

@@ -31,6 +31,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Treats newly supplied explicit intent (`agent`) and exact inherited rerun intent (`rerun`) as authoritative acceptance criteria, while preserving their distinct sources, and skips transcript-based inference even when `intent.enabled` is false
 - Runs transcript-based inference only when `intent.enabled` is true
 - Matches local agent transcripts against non-deleted changed files when present, falling back to all changed files for all-deletion diffs, may use the configured pipeline agent to disambiguate plausible matches, and summarizes the likely author intent with that agent
+- Discards an inferred summary that describes some other change, checked against this run's changed files and head commit message: a summary naming only files outside the change is rejected without an agent call, and the configured pipeline agent otherwise re-checks the summary against that ground truth. The check also applies to a cached summary, an unavailable agent leaves the summary in place, and a discarded summary is neither cached nor attached, so the run continues with no intent rather than a confident wrong one
 - Stores the derived summary, source, session ID, and match score on the run
 - Logs accepted candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and acceptance reason
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches

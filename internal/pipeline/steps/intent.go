@@ -210,6 +210,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	return intent.Extract(ctx, intent.ExtractParams{
 		OriginCWD:     repo.WorkingPath,
 		DiffFiles:     diffFiles,
+		ChangeSubject: headCommitMessage(ctx, gitWorkDir, run.HeadSHA),
 		BaseTime:      baseTime,
 		HeadTime:      headTime,
 		SlackDays:     cfg.Intent.SlackDays,
@@ -218,10 +219,25 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		Cache:         intent.NewDBCache(sctx.DB),
 		Summarizer:    intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir),
 		Disambiguator: intent.NewAgentDisambiguator(sctx.Agent, sctx.WorkDir),
+		Verifier:      intent.NewAgentVerifier(sctx.Agent, sctx.WorkDir),
 		Logf: func(format string, args ...any) {
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},
 	})
+}
+
+// headCommitMessage returns the head commit's subject and body, used as ground
+// truth by the intent conformance gate. It is best-effort: an unreadable commit
+// leaves the gate with the changed-file list alone, which is still ground truth.
+func headCommitMessage(ctx context.Context, dir, head string) string {
+	if strings.TrimSpace(head) == "" || git.IsZeroSHA(head) {
+		return ""
+	}
+	out, err := git.Run(ctx, dir, "log", "-1", "--format=%s%n%n%b", head)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 func diffFilesForIntentMatching(ctx context.Context, dir, base, head string) ([]string, error) {

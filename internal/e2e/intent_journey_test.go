@@ -197,6 +197,7 @@ func testJSONString(t *testing.T, s string) string {
 
 // writeIntentScenario writes a fakeagent scenario YAML that returns:
 //   - a deterministic summary when invoked with the intent summarizer prompt
+//   - an affirmative answer when invoked with the intent conformance prompt
 //   - the standard "no findings" response for everything else, so the
 //     pipeline sails through to completion without needing approval.
 //
@@ -210,6 +211,11 @@ func writeIntentScenario(t *testing.T) string {
     text: "summarized"
     structured:
       summary: "user wanted Bar() helper added"
+  - match: "Decide whether it describes THIS change"
+    text: "conforms"
+    structured:
+      describes_change: true
+      reason: "fakeagent: summary matches the change"
   - text: "no issues found"
     structured:
       findings: []
