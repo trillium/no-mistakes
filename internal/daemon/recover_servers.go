@@ -29,9 +29,13 @@ type daemonPIDFile struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 }
 
-// reapOrphanedServers kills managed-server subprocesses (opencode,
-// rovodev) left behind by a crashed predecessor daemon and deletes their
-// stale PID files.
+// reapOrphanedServers kills subprocess trees left behind by a crashed
+// predecessor daemon and deletes their stale PID files. Both kinds of recorded
+// leader are covered: managed servers (opencode, rovodev) and native agent
+// leaders (claude, codex, copilot, pi, acp:*). The kill targets the recorded
+// PID's whole process group, so an agent's descendants - notably the test
+// runners a Test-step agent spawns, which are the processes actually observed
+// surviving for a day at full CPU - are reaped along with the leader.
 //
 // Safety rules:
 //   - If another no-mistakes daemon is still running, skip everything so
@@ -91,7 +95,7 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
-		slog.Info("reaping orphaned managed server", "pid", info.PID, "agent", info.Agent, "bin", info.Bin)
+		slog.Info("reaping orphaned agent process group", "pid", info.PID, "agent", info.Agent, "bin", info.Bin)
 		if err := terminateOrphanProcessGroupFunc(info.PID); err != nil {
 			slog.Warn("terminate orphan", "pid", info.PID, "error", err)
 			continue

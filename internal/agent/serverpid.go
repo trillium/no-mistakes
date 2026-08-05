@@ -6,14 +6,21 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ServerPIDInfo records a managed server's identity on disk so that a
+// ServerPIDInfo records a process-group leader's identity on disk so that a
 // freshly started daemon can reap orphaned subprocesses left behind by a
-// crashed predecessor. The file is written after the subprocess starts
-// and deleted after it shuts down cleanly.
+// crashed predecessor. The file is written after the subprocess starts and
+// deleted after its group is reaped.
+//
+// Two kinds of leader are recorded: managed servers (opencode, rovodev), whose
+// Port is set, and native agent leaders (claude, codex, copilot, pi, acp:*),
+// whose Port is zero. Both are group leaders via Setpgid, which is what makes
+// a single group kill on the recorded PID sufficient to reap the whole tree
+// the leader spawned.
 type ServerPIDInfo struct {
 	PID            int       `json:"pid"`
 	Owner          string    `json:"owner,omitempty"`
@@ -93,7 +100,7 @@ func writeServerPIDFile(dir string, info ServerPIDInfo) string {
 		slog.Warn("create server pid dir", "dir", dir, "error", err)
 		return ""
 	}
-	name := fmt.Sprintf("%s-%d.json", info.Agent, info.PID)
+	name := fmt.Sprintf("%s-%d.json", pidFileAgentSegment(info.Agent), info.PID)
 	path := filepath.Join(dir, name)
 	data, err := json.Marshal(info)
 	if err != nil {
@@ -141,6 +148,29 @@ func replaceServerPIDFile(tmpPath, path string) error {
 		}
 		sleepServerPIDRenameRetry()
 	}
+}
+
+// pidFileAgentSegment reduces an agent name to characters that are legal in a
+// filename on every supported OS. Agent names are not all bare words - the ACP
+// adapter reports "acp:<target>", and ':' cannot appear in a Windows filename,
+// so an unsanitized name would silently disable crash recovery for exactly the
+// adapters whose names are most structured. The record itself keeps the true
+// name; only the filename is folded.
+func pidFileAgentSegment(agent string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '.', r == '_', r == '-':
+			return r
+		default:
+			return '-'
+		}
+	}, agent)
+	if safe == "" {
+		return "agent"
+	}
+	return safe
 }
 
 // removeServerPIDFile deletes path, silently ignoring missing files.

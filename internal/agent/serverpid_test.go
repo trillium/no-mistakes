@@ -308,3 +308,51 @@ func readPIDFileUntilStopped(path string, initialPort int, finalPort int, stop <
 		}
 	}
 }
+
+// TestWriteServerPIDFile_AgentNameWithSeparatorStaysWritable pins that a
+// structured agent name still produces a usable record. The ACP adapter reports
+// "acp:<target>", and ':' is illegal in a Windows filename, so an unsanitized
+// name would make writeServerPIDFile fail and silently disable crash recovery
+// for that adapter. The record must keep the real name; only the filename is
+// folded.
+func TestWriteServerPIDFile_AgentNameWithSeparatorStaysWritable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeServerPIDFile(dir, ServerPIDInfo{
+		PID:       4242,
+		Agent:     "acp:zed",
+		Bin:       "/bin/acpx",
+		StartedAt: time.Now().UTC(),
+	})
+	if path == "" {
+		t.Fatal("writeServerPIDFile returned no path for a structured agent name")
+	}
+	base := filepath.Base(path)
+	if strings.ContainsAny(base, `:/\`) {
+		t.Fatalf("pid file name %q contains a path or drive separator", base)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info ServerPIDInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Agent != "acp:zed" {
+		t.Fatalf("recorded agent = %q, want the unmodified acp:zed", info.Agent)
+	}
+}
+
+func TestPIDFileAgentSegment(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"claude", "claude"},
+		{"acp:zed", "acp-zed"},
+		{"a/b", "a-b"},
+		{`a\b`, "a-b"},
+		{"", "agent"},
+	} {
+		if got := pidFileAgentSegment(tc.in); got != tc.want {
+			t.Errorf("pidFileAgentSegment(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
