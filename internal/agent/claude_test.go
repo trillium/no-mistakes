@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -419,12 +420,97 @@ func TestClaudeAgent_FinalizeResult_NoSchemaAllowsTextOnly(t *testing.T) {
 }
 
 func TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput(t *testing.T) {
-	_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", text: "plain text"}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	// empty text → errNoStructuredOutput (retriable via runWithRetry)
+	_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", text: ""}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
 	if err == nil {
 		t.Fatal("expected error when structured output is missing")
 	}
 	if !errors.Is(err, errNoStructuredOutput) {
 		t.Fatalf("expected errNoStructuredOutput, got: %v", err)
+	}
+}
+
+func TestClaudeAgent_FinalizeResult_ProseTextYieldsTextNotJSON(t *testing.T) {
+	// non-empty text with no embedded JSON → claudeTextNotJSONError (repair-eligible, not retried)
+	_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", text: "plain text"}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error when text has no JSON")
+	}
+	var textNotJSON *claudeTextNotJSONError
+	if !errors.As(err, &textNotJSON) {
+		t.Fatalf("expected claudeTextNotJSONError, got: %v", err)
+	}
+	// The real parse error from parseStructuredTextOutput must be preserved, not
+	// replaced with a hardcoded "no JSON found" string.
+	if !strings.Contains(err.Error(), "claude output parse:") {
+		t.Errorf("error should include parse context, got: %q", err.Error())
+	}
+}
+
+func TestClaudeAgent_FinalizeResult_ADHDPrefixProseYieldsTextNotJSON(t *testing.T) {
+	// Real ADHD-rule output: "Status: ..." prefix before JSON is not bare enough to extract.
+	// The presence of "Status:" before any JSON triggers claudeTextNotJSONError so the
+	// repair turn gets a chance to recover it.
+	text := "Status: review complete. Now:\n\nThe findings look clean."
+	_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", text: text}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error for pure ADHD prose with no JSON")
+	}
+	var textNotJSON *claudeTextNotJSONError
+	if !errors.As(err, &textNotJSON) {
+		t.Fatalf("expected claudeTextNotJSONError, got %T: %v", err, err)
+	}
+}
+
+func TestClaudeAgent_FinalizeResult_EmbeddedJSONExtractedWithoutRepair(t *testing.T) {
+	// Prose prefix followed by valid JSON object — parseStructuredTextOutput should
+	// extract it without triggering the repair round.
+	text := "Step 1 done. Now:\n\n" + `{"result":"ok","findings":[]}`
+	schema := json.RawMessage(`{"type":"object","properties":{"result":{"type":"string"},"findings":{"type":"array"}}}`)
+	res, err := finalizeClaudeResult(&claudeResult{Subtype: "success", text: text}, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("expected embedded JSON to be extracted, got: %v", err)
+	}
+	if res == nil || res.Output == nil {
+		t.Fatal("expected non-nil Output from embedded JSON extraction")
+	}
+}
+
+func TestClaudeRetryClassifier_TextNotJSONNotRetried(t *testing.T) {
+	err := &claudeTextNotJSONError{err: fmt.Errorf("no json found")}
+	label, retry := claudeRetryClassifier(err)
+	if retry {
+		t.Fatalf("claudeTextNotJSONError should not be retried, got label=%q", label)
+	}
+}
+
+func TestClaudeRetryClassifier_ProseWrappedNotRetried(t *testing.T) {
+	err := claudeProseError(fmt.Errorf("original"))
+	label, retry := claudeRetryClassifier(err)
+	if retry {
+		t.Fatalf("claudeProseError (neverTransient) should not be retried, got label=%q", label)
+	}
+}
+
+func TestClaudeRetryClassifier_ProseWrappedWithTransientNeedle(t *testing.T) {
+	// The model output might contain "overloaded_error" in its text — that must
+	// NOT promote the prose error to a retriable transient.
+	err := claudeProseError(fmt.Errorf("the model said overloaded_error in its reply"))
+	label, retry := claudeRetryClassifier(err)
+	if retry {
+		t.Fatalf("prose error with transient needle must not be retried, got label=%q", label)
+	}
+}
+
+func TestClaudeAgent_ClaudeProseError_MessageNamesCause(t *testing.T) {
+	inner := fmt.Errorf("no json found")
+	err := claudeProseError(inner)
+	msg := err.Error()
+	if !strings.Contains(msg, "CLAUDE.md") {
+		t.Errorf("prose error should mention CLAUDE.md, got: %q", msg)
+	}
+	if !errors.Is(err, inner) {
+		t.Error("claudeProseError should wrap inner so errors.Is works")
 	}
 }
 

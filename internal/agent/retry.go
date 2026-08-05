@@ -116,7 +116,15 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 
 // claudeRetryClassifier retries both transient API errors and the
 // no-structured-output case that the existing loop already handled.
+// claudeTextNotJSONError (prose reply with a live session) is NOT retried:
+// runOnce already did a single in-session repair turn and returned either a
+// repaired result or claudeProseError. claudeProseError wraps in neverTransient
+// so classifyTransient already refuses it; no separate check is needed here.
 func claudeRetryClassifier(err error) (string, bool) {
+	var textNotJSON *claudeTextNotJSONError
+	if errors.As(err, &textNotJSON) {
+		return "", false
+	}
 	if errors.Is(err, errNoStructuredOutput) {
 		return "missing structured output", true
 	}

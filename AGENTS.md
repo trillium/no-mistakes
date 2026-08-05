@@ -232,6 +232,15 @@ Safest local verification sequence after non-trivial changes:
 - Mechanics live in `.github/workflows/release.yml`; the contract is pinned by the root `TestReleaseWorkflow*` static tests in `workflow_release_signing_test.go`, and secret values are never recorded here or in any test fixture.
 - Notarization, stapling, a PKG, Homebrew, and universal binaries are intentionally out of scope for this phase.
 
+**Claude Adapter Structured Output**
+
+- The claude adapter (`internal/agent/claude.go`) expects structured output via the `--json-schema` flag's native `StructuredOutput` tool call. Output-shaping rules in a user's `CLAUDE.md` (ADHD formatting rules, firstmate-identity prompts, etc.) can cause claude to answer in prose rather than calling the tool, producing "invalid character … looking for beginning of value" parse failures.
+- `finalizeClaudeResult` falls back to `parseStructuredTextOutput` when `StructuredOutput` is nil but `text` is non-empty: if the JSON is embedded in the prose it is extracted without a repair turn. If text is present but contains no parseable JSON, a `claudeTextNotJSONError` is returned (not `errNoStructuredOutput`).
+- `claudeTextNotJSONError` earns ONE in-session repair turn via `--resume` (`buildClaudeRepairPrompt`): the model already did the work; we only need the JSON rendering. A successful repair returns the repaired result; a failed repair returns `claudeProseError` (a `claudeProseWrappedError`), which names output-shaping rules as the likely cause.
+- `claudeRetryClassifier` explicitly blocks `claudeTextNotJSONError` and `claudeProseWrappedError` from the `runWithRetry` loop: both types must never be classified as transient because the model's own words may contain transient needles (e.g. "connection refused").
+- Empty `text` (nil `StructuredOutput` + no text) returns `errNoStructuredOutput` and is still retried by `runWithRetry` up to `claudeMaxRetries` times, preserving prior behavior for genuine transient omissions.
+- Regressions: `TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput`, `TestClaudeAgent_FinalizeResult_ProseTextYieldsTextNotJSON`, `TestClaudeAgent_FinalizeResult_ADHDPrefixProseYieldsTextNotJSON`, `TestClaudeAgent_FinalizeResult_EmbeddedJSONExtractedWithoutRepair`, `TestClaudeRetryClassifier_TextNotJSONNotRetried`, `TestClaudeRetryClassifier_ProseWrappedNotRetried`, `TestClaudeRetryClassifier_ProseWrappedWithTransientNeedle`, `TestClaudeAgent_ClaudeProseError_MessageNamesCause`.
+
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.

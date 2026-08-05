@@ -72,58 +72,15 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.JSONSchema, resumeID)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
-	cmd.Dir = opts.CWD
-	// Claude Code print mode documents text stdin as its non-interactive
-	// prompt transport. Giving os/exec an in-memory reader keeps user prompt
-	// bytes out of argv and lets Cmd own the bounded concurrent copy, including
-	// EOF, early-child-exit, cancellation, and WaitDelay cleanup paths.
-	cmd.Stdin = strings.NewReader(opts.Prompt)
-	cmd.Env = gitSafeEnv(opts.CWD)
-	shellenv.ConfigureShellCommand(cmd)
 
-	var stderrBuf []byte
-	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("claude start: %w", err)
-	}
-	defer started.closePipes()
-	pid := started.pid()
+	result, usage, pid, err := a.runTurn(ctx, opts.Prompt, opts, resumeID)
 	emitAgentStarted(opts, "claude", pid)
-
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(started.stderr)
-	}()
-
-	var usage TokenUsage
-	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
-		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("claude parse events: %w", err)
-		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
+	if err != nil {
+		emitAgentExited(opts, "claude", pid, err)
+		return nil, err
 	}
 
-	waitErr := started.wait()
-	stderrWG.Wait()
-	if waitErr != nil {
-		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
-		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
-	}
-
-	if result == nil {
-		retErr := fmt.Errorf("claude returned no result event")
-		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
-	}
-
-	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
+	res, finalErr := finalizeClaudeResult(result, opts.JSONSchema, usage)
 	if res != nil {
 		res.SessionID = result.sessionID
 		res.Resumed = resumeID != ""
@@ -138,32 +95,188 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 			res.ModelProvider = "anthropic"
 		}
 	}
-	if errors.Is(err, errNoStructuredOutput) && opts.OnChunk != nil {
+	if errors.Is(finalErr, errNoStructuredOutput) && opts.OnChunk != nil {
 		opts.OnChunk(fmt.Sprintf("structured output missing: subtype=%s, text_len=%d, input_tokens=%d, output_tokens=%d",
 			result.Subtype, len(result.text), usage.InputTokens, usage.OutputTokens))
 		opts.OnChunk(fmt.Sprintf("raw result event: %s", string(result.rawEvent)))
 	}
-	emitAgentExited(opts, "claude", pid, err)
-	return res, err
+
+	// A schema-bearing turn answered in prose (text present but not JSON) earns
+	// exactly ONE repair turn via --resume in the same session. The model keeps
+	// the context it already built, so we ask only for the JSON rendering of the
+	// answer it just gave. Only a text-parse failure earns the repair; a plain
+	// errNoStructuredOutput (empty text, transient omission) is left for the
+	// runWithRetry loop to handle as before.
+	var textNotJSON *claudeTextNotJSONError
+	if errors.As(finalErr, &textNotJSON) && result.sessionID != "" && len(opts.JSONSchema) > 0 {
+		repairResult, repairUsage, repairPid, repairErr := a.runTurn(ctx, buildClaudeRepairPrompt(opts.JSONSchema), opts, result.sessionID)
+		emitAgentStarted(opts, "claude", repairPid)
+		if repairErr != nil {
+			// The repair turn failed to complete — this is transport, not formatting.
+			// Return it unwrapped so classifyTransient can still see the error
+			// wording and decide whether a retry is warranted.
+			emitAgentExited(opts, "claude", repairPid, repairErr)
+			return nil, fmt.Errorf("claude answered in prose and the JSON-only follow-up could not complete: %w", repairErr)
+		}
+		// Accumulate tokens from both turns so the caller sees the true cost of
+		// the repair round, not just the follow-up message in isolation.
+		combinedUsage := usage
+		combinedUsage.Add(repairUsage)
+		repaired, repairFinalErr := finalizeClaudeResult(repairResult, opts.JSONSchema, combinedUsage)
+		if repairFinalErr == nil {
+			if repaired != nil {
+				repaired.SessionID = repairResult.sessionID
+				repaired.Model = repairResult.model
+				repaired.CacheCreationReported = repaired.UsageReported
+				if repairResult.model != "" {
+					repaired.ModelProvider = "anthropic"
+				}
+			}
+			emitAgentExited(opts, "claude", repairPid, nil)
+			return repaired, nil
+		}
+		// Repair turn also came back as prose — name the cause for the operator.
+		emitAgentExited(opts, "claude", repairPid, repairFinalErr)
+		return nil, claudeProseError(finalErr)
+	}
+
+	emitAgentExited(opts, "claude", pid, finalErr)
+	return res, finalErr
+}
+
+// runTurn spawns one claude process, collects its output, and returns the raw
+// result. It is extracted from runOnce so the repair round can reuse the same
+// session (via resumeID) without going through the full runOnce/runWithRetry
+// machinery. The caller is responsible for lifecycle event emission.
+func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, resumeID string) (*claudeResult, TokenUsage, int, error) {
+	args := a.buildArgs(opts.JSONSchema, resumeID)
+	cmd := exec.CommandContext(ctx, a.bin, args...)
+	cmd.Dir = opts.CWD
+	// Claude Code print mode documents text stdin as its non-interactive
+	// prompt transport. Giving os/exec an in-memory reader keeps user prompt
+	// bytes out of argv and lets Cmd own the bounded concurrent copy, including
+	// EOF, early-child-exit, cancellation, and WaitDelay cleanup paths.
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Env = gitSafeEnv(opts.CWD)
+	shellenv.ConfigureShellCommand(cmd)
+
+	var stderrBuf []byte
+	var stderrWG sync.WaitGroup
+	started, err := startNativeAgentCommand(cmd)
+	if err != nil {
+		return nil, TokenUsage{}, 0, fmt.Errorf("claude start: %w", err)
+	}
+	defer started.closePipes()
+	pid := started.pid()
+
+	stderrWG.Add(1)
+	go func() {
+		defer stderrWG.Done()
+		stderrBuf, _ = io.ReadAll(started.stderr)
+	}()
+
+	var usage TokenUsage
+	var result *claudeResult
+	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+		err = started.waitAfterParseError(err)
+		stderrWG.Wait()
+		return nil, usage, pid, fmt.Errorf("claude parse events: %w", err)
+	}
+
+	waitErr := started.wait()
+	stderrWG.Wait()
+	if waitErr != nil {
+		return nil, usage, pid, fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+	}
+
+	if result == nil {
+		return nil, usage, pid, fmt.Errorf("claude returned no result event")
+	}
+	return result, usage, pid, nil
 }
 
 func (a *claudeAgent) Close() error { return nil }
+
+// claudeTextNotJSONError marks the one case a repair turn can fix: claude
+// succeeded but its text output is not the JSON the schema requires, even after
+// parseStructuredTextOutput tried to extract it. The session that produced it
+// is still live, so --resume can re-ask for the JSON without discarding the
+// context the model already built. Error() delegates so the operator reads the
+// underlying parse failure without a wrapper sentence.
+type claudeTextNotJSONError struct{ err error }
+
+func (e *claudeTextNotJSONError) Error() string { return e.err.Error() }
+func (e *claudeTextNotJSONError) Unwrap() error { return e.err }
+
+// buildClaudeRepairPrompt is the single in-session follow-up sent when a
+// schema-bearing turn came back as prose. It forbids further work and tool
+// calls — the model has already done the task, and the only thing missing is
+// the JSON rendering of the answer it just gave.
+func buildClaudeRepairPrompt(schema json.RawMessage) string {
+	return strings.Join([]string{
+		"Your previous reply was prose, not JSON, so it could not be used.",
+		"Do not do any more work and do not call any tools.",
+		"Reply with only the JSON result for the task you just completed, and nothing else.",
+		"The JSON must match this schema exactly: " + string(schema),
+	}, "\n")
+}
+
+// claudeProseError wraps err in neverTransient so classifyTransient cannot read
+// the model's own words as a retriable signal. The operator-readable message
+// names prose output as the cause and points at CLAUDE.md output-shaping rules.
+func claudeProseError(err error) error {
+	return neverTransient(fmt.Errorf(
+		"claude answered in prose instead of the JSON this step requires, and a JSON-only follow-up did not recover it "+
+			"(output-shaping rules or hooks in CLAUDE.md may prevent structured output in non-interactive runs; "+
+			"check whether those rules apply to pipeline agents): %w",
+		err,
+	))
+}
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
 		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
-	if len(schema) > 0 && result.StructuredOutput == nil {
-		return nil, errNoStructuredOutput
+	if len(schema) == 0 {
+		return &Result{
+			Text:                  result.text,
+			Usage:                 usage,
+			UsageReported:         usage.Reported,
+			CacheCreationReported: usage.CacheCreationReported,
+		}, nil
 	}
-
-	return &Result{
-		Output:                result.StructuredOutput,
-		Text:                  result.text,
-		Usage:                 usage,
-		UsageReported:         usage.Reported,
-		CacheCreationReported: usage.CacheCreationReported,
-	}, nil
+	if result.StructuredOutput != nil {
+		return &Result{
+			Output:                result.StructuredOutput,
+			Text:                  result.text,
+			Usage:                 usage,
+			UsageReported:         usage.Reported,
+			CacheCreationReported: usage.CacheCreationReported,
+		}, nil
+	}
+	// Structured-output channel is nil. ADHD output-shaping rules or models that
+	// ignore the structured-output contract may embed the required JSON in their
+	// text reply instead (e.g. "Status: done.\n\n{...}" or a fenced block).
+	// Try text extraction before declaring a failure — this avoids the repair
+	// round entirely when the JSON is present but wrapped in prose.
+	if result.text != "" {
+		output, parseErr := parseStructuredTextOutput(result.text, schema)
+		if parseErr == nil {
+			return &Result{
+				Output:                output,
+				Text:                  result.text,
+				Usage:                 usage,
+				UsageReported:         usage.Reported,
+				CacheCreationReported: usage.CacheCreationReported,
+			}, nil
+		}
+		// Text is present but contains no parseable JSON — a repair turn via
+		// --resume may recover it by asking for the JSON alone.
+		return nil, &claudeTextNotJSONError{
+			err: fmt.Errorf("claude output parse: %w (output snippet: %q)", parseErr, outputSnippet(result.text)),
+		}
+	}
+	return nil, errNoStructuredOutput
 }
 
 // buildArgs constructs the claude CLI arguments. User-supplied extraArgs
