@@ -27,6 +27,9 @@ type ExtractParams struct {
 	OriginCWD string
 	// DiffFiles is the repo-relative file set used for matching and scoring.
 	DiffFiles []string
+	// ChangeSubject is the head commit's message. It is ground truth for the
+	// conformance gate, never an input to matching.
+	ChangeSubject string
 	// BaseTime is the committer time of the base SHA.
 	BaseTime time.Time
 	// HeadTime is the committer time of the head SHA.
@@ -48,6 +51,10 @@ type ExtractParams struct {
 	// Disambiguator optionally chooses among multiple plausible sessions when
 	// file-overlap scoring is not decisive enough to pick one safely.
 	Disambiguator Disambiguator
+	// Verifier optionally re-checks the drafted summary against the change it
+	// claims to describe. Nil leaves only the deterministic conformance check,
+	// which always runs. See conformance.go.
+	Verifier Verifier
 	// Logf receives best-effort accepted candidate diagnostics. Nil disables logging.
 	Logf func(format string, args ...any)
 }
@@ -141,20 +148,31 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	}
 
 	key := cacheKeyFor(match.Session)
-	if cached, ok := p.Cache.Get(key); ok && cached != "" {
-		return &Result{
-			Summary:   cached,
-			AgentName: match.Session.AgentName,
-			SessionID: match.Session.SessionID,
-			Score:     match.Score,
-		}, nil
+	summary, cached := "", false
+	if hit, ok := p.Cache.Get(key); ok && hit != "" {
+		summary, cached = hit, true
+	} else {
+		var err error
+		summary, err = p.Summarizer.Summarize(ctx, match.Session)
+		if err != nil {
+			return nil, fmt.Errorf("intent: summarize: %w", err)
+		}
 	}
 
-	summary, err := p.Summarizer.Summarize(ctx, match.Session)
-	if err != nil {
-		return nil, fmt.Errorf("intent: summarize: %w", err)
+	// The gate runs on cached summaries too: the cache is keyed by session, so a
+	// summary drafted for one run's diff must not be inherited unchecked by the
+	// next run that matches the same session.
+	if ok, reason := p.conforms(ctx, summary); !ok {
+		if p.Logf != nil {
+			p.Logf("discarded inferred intent from %s session %s: %s",
+				match.Session.AgentName, match.Session.SessionID, reason)
+		}
+		return nil, ErrNoMatch
 	}
-	p.Cache.Put(key, summary, match.Session.AgentName, match.Session.SessionID)
+
+	if !cached {
+		p.Cache.Put(key, summary, match.Session.AgentName, match.Session.SessionID)
+	}
 
 	return &Result{
 		Summary:   summary,

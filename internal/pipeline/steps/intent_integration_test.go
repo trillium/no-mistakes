@@ -16,15 +16,42 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
-// fakeIntentAgent always returns a canned summary - bypasses any real LLM.
-type fakeIntentAgent struct{}
+// fakeIntentAgent returns a canned summary - bypasses any real LLM. The summary
+// must name the file the test actually changed: the conformance gate discards a
+// summary whose only named paths are outside the diff.
+//
+// It answers the conformance prompt affirmatively rather than falling through
+// to the summary payload. A summary payload parses as a verification that
+// omitted describes_change, which conforms() treats as a verifier error and so
+// keeps the intent - the test would pass through the error path and never
+// exercise an affirmative verdict.
+type fakeIntentAgent struct {
+	summary string
+}
 
 func (f *fakeIntentAgent) Name() string { return "fake" }
-func (f *fakeIntentAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-	return &agent.Result{
-		Output: []byte(`{"summary": "user wanted to add Bar() to internal/foo.go"}`),
-		Text:   `{"summary": "user wanted to add Bar() to internal/foo.go"}`,
-	}, nil
+func (f *fakeIntentAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	if strings.Contains(opts.Prompt, "Decide whether it describes THIS change") {
+		return jsonAgentResult(map[string]any{
+			"describes_change": true,
+			"reason":           "fake: summary matches the change",
+		})
+	}
+	summary := f.summary
+	if summary == "" {
+		summary = "user wanted to add Bar() to internal_foo.go"
+	}
+	return jsonAgentResult(map[string]any{"summary": summary})
+}
+
+// jsonAgentResult renders an agent payload with encoding/json rather than
+// strconv.Quote, whose Go escapes (\x..) are not valid JSON for non-ASCII input.
+func jsonAgentResult(payload map[string]any) (*agent.Result, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &agent.Result{Output: encoded, Text: string(encoded)}, nil
 }
 func (f *fakeIntentAgent) Close() error { return nil }
 
@@ -240,6 +267,7 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.2, SlackDays: 3}}
 	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+	sctx.Agent = &fakeIntentAgent{summary: "user wanted to add Run() to active.go and drop the obsolete files"}
 
 	outcome, err := (&IntentStep{}).Execute(sctx)
 	if err != nil {
