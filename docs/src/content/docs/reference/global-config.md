@@ -77,7 +77,7 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`, `<harness>:<model>` |
 | Default | `auto`                                                                                      |
 
 `auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
@@ -89,11 +89,32 @@ The effective agent configuration must resolve to a runnable runner before a new
 If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
 `no-mistakes doctor` checks the global configuration, while every run repeats resolution after applying any trusted repository-level `agent` override.
 
+#### Selecting a model
+
+A selector may also name the model the harness should run: `claude:opus`, `codex:gpt-5.4`, `opencode:github-copilot/gpt-4.1`.
+The selector is split on the **first** colon only. `acp` is a reserved prefix, so `acp:<target>` keeps meaning an ACP bridge target and never a model, including targets that contain their own colons.
+A model may contain a slash (opencode model ids are `<provider>/<model>`) but never a colon.
+
+An empty model is invalid the same way an empty ACP target is: `claude:` is a config error, not a bare `claude`.
+Harnesses with no model channel reject a model at load time instead of silently ignoring it - `auto` (the harness is not chosen yet), `rovodev` (the `acli rovodev serve` API exposes no model selector), `cursor`, and every `acp:<target>` (select the model in the ACP agent's own configuration).
+
+| Harness    | How the model is delivered                                       |
+| ---------- | ---------------------------------------------------------------- |
+| `claude`   | `--model <model>`                                                |
+| `codex`    | `-m <model>`                                                     |
+| `pi`       | `--model <model>` (accepts a `<provider>/<id>` pattern)          |
+| `copilot`  | `--model <model>`                                                |
+| `opencode` | `model: {providerID, modelID}` in the HTTP message body          |
+
+A selector model takes precedence over [`agent_args_override`](#agent_args_override): the competing model flag is removed from your overrides for that run, so the result never depends on how the underlying CLI treats a duplicate flag. Every other override flag is untouched, and an override model still applies whenever the selector names no model.
+
 You can also set an ordered fallback list:
 
 ```yaml
 agent: [codex, claude]
 ```
+
+Fallback entries may carry models too: `agent: [codex:gpt-5.4, claude:opus]`.
 
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
 After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
@@ -163,6 +184,8 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 | Type    | `map[string][]string`                                     |
 | Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
 | Default | Empty (no extra flags)                                    |
+
+A model named by an [`agent`](#agent) selector (or by `--agent`) wins over the model flag set here: for that run no-mistakes removes the competing model flag from these overrides and supplies the selected one instead. All other override flags are unaffected.
 
 User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 

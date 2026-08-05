@@ -21,6 +21,9 @@ import (
 type codexAgent struct {
 	bin       string
 	extraArgs []string
+	// model is the per-run model from an `--agent codex:<model>` selector,
+	// empty when none was chosen. It is rendered as codex's -m flag.
+	model string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses codex's project-level settings/instructions surface.
 	disableProjectSettings bool
@@ -167,12 +170,24 @@ func (a *codexAgent) Close() error { return nil }
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
 func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+11)
+	// A per-run selector model wins over agent_args_override: drop the user's
+	// competing -m/--model rather than rely on codex's duplicate-flag rule. The
+	// model flag sits with the other user extras, before the `resume <id>` and
+	// prompt positionals, because `codex exec resume` rejects flags placed after
+	// them.
+	extraArgs := a.extraArgs
+	if a.model != "" {
+		extraArgs = dropModelArgs(extraArgs, codexModelFlags)
+	}
+	args := make([]string, 0, len(extraArgs)+13)
 	args = append(args, "exec")
 	if resumeID != "" {
 		args = append(args, "resume")
 	}
-	args = append(args, a.extraArgs...)
+	args = append(args, extraArgs...)
+	if a.model != "" {
+		args = append(args, "-m", a.model)
+	}
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}

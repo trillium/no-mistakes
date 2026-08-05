@@ -266,6 +266,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(str
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
+			Model:                  cfg.AgentModelFor(name),
 		})
 		if err != nil {
 			for _, existing := range created {
@@ -906,6 +907,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 				DisableProjectSettings: cfg.DisableProjectSettings,
+				Model:                  cfg.AgentModelFor(name),
 			})
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))

@@ -19,6 +19,10 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// model is the per-run model from an `--agent pi:<model>` selector, empty
+	// when none was chosen. pi's --model takes a pattern or id and accepts the
+	// "provider/id" form, so a slashed model needs no separate --provider.
+	model string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
@@ -121,7 +125,18 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 // opt-out, the context-file suppression flag comes first. User extras otherwise
 // precede the managed flags that no-mistakes requires for JSONL parsing.
 func (a *piAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+5)
+	// A per-run selector model wins over agent_args_override. --provider is
+	// dropped alongside --model only when the model already names its provider
+	// ("provider/id"); a bare model id still needs the operator's --provider.
+	extraArgs := a.extraArgs
+	if a.model != "" {
+		flags := piModelFlags
+		if strings.Contains(a.model, "/") {
+			flags = append(append([]string{}, flags...), "--provider")
+		}
+		extraArgs = dropModelArgs(extraArgs, flags)
+	}
+	args := make([]string, 0, len(extraArgs)+7)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
 	// (firstmate) cannot install a fleet-captain identity on the gate agent.
@@ -130,17 +145,20 @@ func (a *piAgent) buildArgs() []string {
 	// instruction files exactly as before (backward-compat).
 	pinIndex := -1
 	if a.disableProjectSettings {
-		pinIndex = piNoContextFilesArgIndex(a.extraArgs)
+		pinIndex = piNoContextFilesArgIndex(extraArgs)
 		contextFlag := "--no-context-files"
 		if pinIndex >= 0 {
-			contextFlag = a.extraArgs[pinIndex]
+			contextFlag = extraArgs[pinIndex]
 		}
 		args = append(args, contextFlag)
 	}
-	for i, arg := range a.extraArgs {
+	for i, arg := range extraArgs {
 		if i != pinIndex {
 			args = append(args, arg)
 		}
+	}
+	if a.model != "" {
+		args = append(args, "--model", a.model)
 	}
 	args = append(args, "--mode", "json", "--no-session")
 	return args
