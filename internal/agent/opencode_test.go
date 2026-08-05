@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -518,5 +520,259 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 	}
 	if strings.Contains(msg, "Now I need to find the failing test") {
 		t.Errorf("error must not embed the reasoning prose snippet, got %q", msg)
+	}
+}
+
+// opencodeProseRepairServer is a mock opencode whose first schema-bearing turn
+// answers in prose and whose second turn answers with whatever the caller
+// chose. It records every message body so a test can assert what the repair
+// turn actually asked for.
+type opencodeProseRepairServer struct {
+	mu            sync.Mutex
+	messageBodies []string
+	streamTexts   []string
+	messageBodyFn func(turn int) string
+}
+
+func (s *opencodeProseRepairServer) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	streams := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			s.mu.Lock()
+			turn := streams
+			streams++
+			text := ""
+			if turn < len(s.streamTexts) {
+				text = s.streamTexts[turn]
+			}
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			part, err := json.Marshal(text)
+			if err != nil {
+				t.Errorf("marshal stream text: %v", err)
+				return
+			}
+			fmt.Fprintf(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"s1\",\"part\":{\"id\":\"p%d\",\"messageID\":\"msg%d\",\"type\":\"text\",\"text\":%s}}}}\n\n", turn, turn, part)
+			fmt.Fprintf(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg%d\",\"role\":\"assistant\"}}}}\n\n", turn)
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read message body: %v", err)
+				return
+			}
+			s.mu.Lock()
+			turn := len(s.messageBodies)
+			s.messageBodies = append(s.messageBodies, string(body))
+			s.mu.Unlock()
+			fmt.Fprint(w, s.messageBodyFn(turn))
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}
+}
+
+func (s *opencodeProseRepairServer) sentPrompts(t *testing.T) []string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prompts := make([]string, 0, len(s.messageBodies))
+	for _, raw := range s.messageBodies {
+		var body struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		}
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatalf("unmarshal sent message %q: %v", raw, err)
+		}
+		text := ""
+		for _, part := range body.Parts {
+			text += part.Text
+		}
+		prompts = append(prompts, text)
+	}
+	return prompts
+}
+
+// TestOpencodeAgent_ProseReplyIsRepairedInSession asserts that a schema-bearing
+// turn answered conversationally is re-asked once, in the SAME session, for the
+// JSON alone - instead of failing the whole step on a formatting miss after the
+// model already did the work. Regression: `--agent
+// opencode:github-copilot/gpt-4.1` failed the review step 2/2 runs with
+// "invalid character 'N' looking for beginning of value" because gpt-4.1 replied
+// in prose and opencode reported neither structured output nor an error.
+func TestOpencodeAgent_ProseReplyIsRepairedInSession(t *testing.T) {
+	mock := &opencodeProseRepairServer{
+		streamTexts: []string{
+			"Nothing is in progress or blocked - your repo's localStorage bug is fully fixed.",
+			`{"findings":[],"risk_level":"low"}`,
+		},
+		messageBodyFn: func(turn int) string {
+			if turn == 0 {
+				return `{"info":{"id":"msg0","role":"assistant"},"parts":[{"type":"text","text":"Nothing is in progress or blocked - your repo's localStorage bug is fully fixed."}]}`
+			}
+			return `{"info":{"id":"msg1","role":"assistant","structured":{"findings":[],"risk_level":"low"}},"parts":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\"}"}]}`
+		},
+	}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"risk_level":{"type":"string"}},"required":["risk_level"]}`),
+	})
+	if err != nil {
+		t.Fatalf("expected the repair turn to recover the step, got error: %v", err)
+	}
+	if result.Output == nil {
+		t.Fatalf("expected structured output from the repair turn, got %+v", result)
+	}
+	var got struct {
+		RiskLevel string `json:"risk_level"`
+	}
+	if err := json.Unmarshal(result.Output, &got); err != nil {
+		t.Fatalf("unmarshal structured output %s: %v", result.Output, err)
+	}
+	if got.RiskLevel != "low" {
+		t.Errorf("expected risk_level from the repair turn, got %q", got.RiskLevel)
+	}
+
+	prompts := mock.sentPrompts(t)
+	if len(prompts) != 2 {
+		t.Fatalf("expected exactly one repair turn (2 messages), got %d", len(prompts))
+	}
+	repair := prompts[1]
+	for _, want := range []string{"was prose, not JSON", "do not call any tools", "must match this schema exactly"} {
+		if !strings.Contains(repair, want) {
+			t.Errorf("repair prompt missing %q, got %q", want, repair)
+		}
+	}
+}
+
+// TestOpencodeAgent_ProseReplyAfterFailedRepairNamesTheCause asserts the
+// operator-facing error when even the JSON-only follow-up comes back as prose:
+// it must say the model answered in prose, not just surface the raw
+// json.Unmarshal symptom, which reads like a daemon defect.
+func TestOpencodeAgent_ProseReplyAfterFailedRepairNamesTheCause(t *testing.T) {
+	mock := &opencodeProseRepairServer{
+		streamTexts: []string{
+			"Run npm install in the web/ directory first.",
+			"I already told you: run npm install --prefix web.",
+		},
+		messageBodyFn: func(turn int) string {
+			return fmt.Sprintf(`{"info":{"id":"msg%d","role":"assistant"},"parts":[]}`, turn)
+		},
+	}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"risk_level":{"type":"string"}},"required":["risk_level"]}`),
+	})
+	if err == nil {
+		t.Fatalf("expected an error, got result %+v", result)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %+v", result)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "answered in prose") {
+		t.Errorf("expected the error to name prose as the cause, got %q", msg)
+	}
+	if !strings.Contains(msg, "Run npm install") && !strings.Contains(msg, "I already told you") {
+		t.Errorf("expected the error to keep an output snippet for diagnosis, got %q", msg)
+	}
+	if got := len(mock.sentPrompts(t)); got != 2 {
+		t.Errorf("expected exactly one repair turn (2 messages), got %d", got)
+	}
+}
+
+// TestOpencodeAgent_NonStructuredAssistantErrorIsSurfaced asserts that every
+// assistant-error variant is named, not only StructuredOutputError. Swallowing
+// one and text-parsing the leftover prose reports a provider failure as
+// "invalid character ... looking for beginning of value".
+func TestOpencodeAgent_NonStructuredAssistantErrorIsSurfaced(t *testing.T) {
+	mock := &opencodeProseRepairServer{
+		streamTexts: []string{"Let me start by reading the failing test."},
+		messageBodyFn: func(int) string {
+			return `{"info":{"id":"msg0","role":"assistant","error":{"name":"ContextOverflowError","message":"input exceeds the context window"}},"parts":[]}`
+		},
+	}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"risk_level":{"type":"string"}},"required":["risk_level"]}`),
+	})
+	if err == nil {
+		t.Fatalf("expected an error, got result %+v", result)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ContextOverflowError") {
+		t.Errorf("expected the provider error name, got %q", msg)
+	}
+	if !strings.Contains(msg, "input exceeds the context window") {
+		t.Errorf("expected the provider error message, got %q", msg)
+	}
+	if strings.Contains(msg, "invalid character") {
+		t.Errorf("error must not be the JSON-parse-on-prose symptom, got %q", msg)
+	}
+	if got := len(mock.sentPrompts(t)); got != 1 {
+		t.Errorf("an assistant error must not earn a repair turn, got %d messages", got)
+	}
+}
+
+// TestOpencodeAgent_NullStructuredOutputIsNotTrusted asserts a literal
+// "structured": null is treated as no structured output. It unmarshals into any
+// step's findings struct without error, so trusting it would silently record an
+// empty, fabricated result instead of failing or repairing.
+func TestOpencodeAgent_NullStructuredOutputIsNotTrusted(t *testing.T) {
+	mock := &opencodeProseRepairServer{
+		streamTexts: []string{"All good.", `{"risk_level":"low"}`},
+		messageBodyFn: func(turn int) string {
+			if turn == 0 {
+				return `{"info":{"id":"msg0","role":"assistant","structured":null},"parts":[{"type":"text","text":"All good."}]}`
+			}
+			return `{"info":{"id":"msg1","role":"assistant"},"parts":[{"type":"text","text":"{\"risk_level\":\"low\"}"}]}`
+		},
+	}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"risk_level":{"type":"string"}},"required":["risk_level"]}`),
+	})
+	if err != nil {
+		t.Fatalf("expected the repair turn to recover the step, got error: %v", err)
+	}
+	if string(result.Output) == "null" {
+		t.Fatalf("a null structured output must never be trusted as a result")
+	}
+	if !strings.Contains(string(result.Output), `"low"`) {
+		t.Errorf("expected the repaired JSON reply, got %s", result.Output)
 	}
 }

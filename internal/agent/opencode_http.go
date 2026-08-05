@@ -162,3 +162,18 @@ func buildOpencodePrompt(prompt string, schema json.RawMessage) string {
 		"The JSON must match this schema exactly: " + string(schema),
 	}, "\n")
 }
+
+// buildOpencodeRepairPrompt is the single in-session follow-up sent when a
+// schema-bearing turn came back as prose. It deliberately forbids further work
+// and tool calls: the model has already done the task, and the only thing
+// missing is the JSON rendering of the answer it just gave.
+func buildOpencodeRepairPrompt(schema json.RawMessage) string {
+	return strings.Join([]string{
+		"Your previous reply was prose, not JSON, so it could not be used.",
+		"Do not do any more work and do not call any tools.",
+		"Reply now with the JSON result for the task you just completed, and nothing else.",
+		"Do not wrap the JSON in markdown fences.",
+		"Do not include any prose before or after the JSON.",
+		"The JSON must match this schema exactly: " + string(schema),
+	}, "\n")
+}

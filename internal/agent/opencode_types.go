@@ -105,6 +105,21 @@ type opencodeTextPart struct {
 	emittedText string
 }
 
+// beginTurn clears the per-turn text tracking so a second exchange in the same
+// session is parsed against its own reply alone. Cross-turn state is kept on
+// purpose: usageByMsg is keyed by message id so tokens accumulate across turns,
+// and hasEmittedText keeps the caller's streamed log contiguous.
+func (s *opencodeStreamState) beginTurn() {
+	s.textParts = make(map[string]*opencodeTextPart)
+	s.textPartOrder = nil
+	s.filteredPartIDs = nil
+	s.lastText = ""
+	s.lastFinalText = ""
+	if s.usageByMsg == nil {
+		s.usageByMsg = make(map[string]TokenUsage)
+	}
+}
+
 // opencodeStreamState holds mutable state during SSE event processing.
 type opencodeStreamState struct {
 	sessionID       string

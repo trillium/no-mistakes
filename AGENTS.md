@@ -111,6 +111,13 @@ Safest local verification sequence after non-trivial changes:
 - Every invocation of the three commands is logged with caller attribution (PID, PPID, parent command line) via `logLifecycleInvocation` to `<NM_HOME>/logs/cli.log`; this is the incident forensic trail, do not remove or weaken it.
 - Regressions: `TestDaemonStopRefusesWithActiveRunsAndListsThem`, `TestDaemonStopForceOverridesActiveRunGuard`, `TestDaemonRestartRefusesWithActiveRuns`, `TestLifecycleCommandsWriteCallerAttributionToCLILog` (`internal/cli/daemon_lifecycle_test.go`), `TestUpdaterRunRefusesWithActiveRunsAndListsThem`, `TestUpdaterActiveRunGuardAllowsForce` (`internal/update`).
 
+**OpenCode Structured Output (`internal/agent/opencode.go`)**
+
+- opencode is driven over HTTP and asks for structured output with a per-message `format: {type: "json_schema", retryCount: 2}`. Weaker models still answer a schema-bearing step conversationally, and opencode then reports **no** `info.structured` and **no** `info.error` at all - only prose. Never let that reach `finalizeTextResult` as the last word: the raw `invalid character 'N' looking for beginning of value` describes the symptom two minutes into a step and reads like a daemon defect rather than "the model did not answer in JSON".
+- Three layers, in this order (`opencodeTurnResult`): trust `info.structured` unless it is literally `null` (which unmarshals into any findings struct without error, so trusting it records a fabricated empty result); surface **every** `info.error` variant by name, not only `StructuredOutputError`; and only then text-parse the reply. A text-parse failure with a schema earns exactly ONE in-session repair turn (`buildOpencodeRepairPrompt`: no more work, no tools, JSON only) before the step fails. An assistant error never earns one - opencode already retried `StructuredOutputError` internally.
+- `sendTurn` owns one exchange so the repair turn reuses the same session; `opencodeStreamState.beginTurn` clears per-turn text but deliberately keeps `usageByMsg` (message-keyed, so tokens accumulate) and `hasEmittedText` (so the streamed step log stays contiguous).
+- Regressions: `TestOpencodeAgent_ProseReplyIsRepairedInSession`, `TestOpencodeAgent_ProseReplyAfterFailedRepairNamesTheCause`, `TestOpencodeAgent_NonStructuredAssistantErrorIsSurfaced`, `TestOpencodeAgent_NullStructuredOutputIsNotTrusted`, `TestOpencodeAgent_StructuredOutputError`.
+
 **Testing Conventions**
 
 - Prefer e2e tests for behavior that crosses a process or I/O boundary (CLI flags, config loading, git operations, agent spawning, daemon coordination, stdout/stderr, recorded fixtures); unit-test pure helpers where speed and failure localization matter. Prefer creating real git repos in temp dirs over heavy mocking.
