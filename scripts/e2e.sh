@@ -57,8 +57,15 @@ fi
 trap 'reap_inventory; if [[ "${OWNED_INVENTORY}" -eq 1 ]]; then rm -rf "$NM_E2E_DAEMON_INVENTORY" 2>/dev/null || true; fi' EXIT INT TERM
 
 # Default args match the historical Makefile e2e target; callers may override.
+#
+# -timeout is go test's PER-PACKAGE budget, and internal/e2e is one package
+# that serially starts a real daemon per test. The old 300s default assumed an
+# otherwise-idle machine: under normal multi-session load the package needs
+# ~400s+, and blowing the budget surfaces as a panic and goroutine dump rather
+# than a legible test failure. 900s keeps a genuine hang bounded while leaving
+# room for a loaded developer machine.
 if [[ "$#" -eq 0 ]]; then
-  set -- -tags=e2e -count=1 -timeout 300s ./internal/e2e/... ./internal/pipeline/steps/...
+  set -- -tags=e2e -count=1 -timeout 900s ./internal/e2e/... ./internal/pipeline/steps/...
 fi
 
 go test "$@"
