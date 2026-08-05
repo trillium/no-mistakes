@@ -440,6 +440,11 @@ func TestClaudeAgent_FinalizeResult_ProseTextYieldsTextNotJSON(t *testing.T) {
 	if !errors.As(err, &textNotJSON) {
 		t.Fatalf("expected claudeTextNotJSONError, got: %v", err)
 	}
+	// The real parse error from parseStructuredTextOutput must be preserved, not
+	// replaced with a hardcoded "no JSON found" string.
+	if !strings.Contains(err.Error(), "claude output parse:") {
+		t.Errorf("error should include parse context, got: %q", err.Error())
+	}
 }
 
 func TestClaudeAgent_FinalizeResult_ADHDPrefixProseYieldsTextNotJSON(t *testing.T) {
@@ -483,7 +488,7 @@ func TestClaudeRetryClassifier_ProseWrappedNotRetried(t *testing.T) {
 	err := claudeProseError(fmt.Errorf("original"))
 	label, retry := claudeRetryClassifier(err)
 	if retry {
-		t.Fatalf("claudeProseWrappedError should not be retried, got label=%q", label)
+		t.Fatalf("claudeProseError (neverTransient) should not be retried, got label=%q", label)
 	}
 }
 

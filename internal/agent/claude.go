@@ -74,11 +74,11 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	}
 
 	result, usage, pid, err := a.runTurn(ctx, opts.Prompt, opts, resumeID)
+	emitAgentStarted(opts, "claude", pid)
 	if err != nil {
 		emitAgentExited(opts, "claude", pid, err)
 		return nil, err
 	}
-	emitAgentStarted(opts, "claude", pid)
 
 	res, finalErr := finalizeClaudeResult(result, opts.JSONSchema, usage)
 	if res != nil {
@@ -109,15 +109,20 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	// runWithRetry loop to handle as before.
 	var textNotJSON *claudeTextNotJSONError
 	if errors.As(finalErr, &textNotJSON) && result.sessionID != "" && len(opts.JSONSchema) > 0 {
-		repairResult, repairUsage, _, repairErr := a.runTurn(ctx, buildClaudeRepairPrompt(opts.JSONSchema), opts, result.sessionID)
+		repairResult, repairUsage, repairPid, repairErr := a.runTurn(ctx, buildClaudeRepairPrompt(opts.JSONSchema), opts, result.sessionID)
+		emitAgentStarted(opts, "claude", repairPid)
 		if repairErr != nil {
 			// The repair turn failed to complete — this is transport, not formatting.
 			// Return it unwrapped so classifyTransient can still see the error
 			// wording and decide whether a retry is warranted.
-			emitAgentExited(opts, "claude", pid, repairErr)
+			emitAgentExited(opts, "claude", repairPid, repairErr)
 			return nil, fmt.Errorf("claude answered in prose and the JSON-only follow-up could not complete: %w", repairErr)
 		}
-		repaired, repairFinalErr := finalizeClaudeResult(repairResult, opts.JSONSchema, repairUsage)
+		// Accumulate tokens from both turns so the caller sees the true cost of
+		// the repair round, not just the follow-up message in isolation.
+		combinedUsage := usage
+		combinedUsage.Add(repairUsage)
+		repaired, repairFinalErr := finalizeClaudeResult(repairResult, opts.JSONSchema, combinedUsage)
 		if repairFinalErr == nil {
 			if repaired != nil {
 				repaired.SessionID = repairResult.sessionID
@@ -127,11 +132,11 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 					repaired.ModelProvider = "anthropic"
 				}
 			}
-			emitAgentExited(opts, "claude", pid, nil)
+			emitAgentExited(opts, "claude", repairPid, nil)
 			return repaired, nil
 		}
 		// Repair turn also came back as prose — name the cause for the operator.
-		emitAgentExited(opts, "claude", pid, repairFinalErr)
+		emitAgentExited(opts, "claude", repairPid, repairFinalErr)
 		return nil, claudeProseError(finalErr)
 	}
 
@@ -216,25 +221,16 @@ func buildClaudeRepairPrompt(schema json.RawMessage) string {
 	}, "\n")
 }
 
-// claudeProseWrappedError marks the final failure after a schema-bearing turn
-// answered in prose and the JSON-only repair turn did not recover it.
-// It prevents classifyTransient from reading its Error() string: the model's
-// own words may contain transient needles (e.g. "connection refused") and must
-// not classify the failure as a network blip to be retried.
-type claudeProseWrappedError struct{ err error }
-
-func (e *claudeProseWrappedError) Error() string { return e.err.Error() }
-func (e *claudeProseWrappedError) Unwrap() error { return e.err }
-
-// claudeProseError wraps err in a claudeProseWrappedError with an operator-
-// readable message naming prose output as the cause.
+// claudeProseError wraps err in neverTransient so classifyTransient cannot read
+// the model's own words as a retriable signal. The operator-readable message
+// names prose output as the cause and points at CLAUDE.md output-shaping rules.
 func claudeProseError(err error) error {
-	return &claudeProseWrappedError{err: fmt.Errorf(
+	return neverTransient(fmt.Errorf(
 		"claude answered in prose instead of the JSON this step requires, and a JSON-only follow-up did not recover it "+
 			"(output-shaping rules or hooks in CLAUDE.md may prevent structured output in non-interactive runs; "+
 			"check whether those rules apply to pipeline agents): %w",
 		err,
-	)}
+	))
 }
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -264,7 +260,8 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	// Try text extraction before declaring a failure — this avoids the repair
 	// round entirely when the JSON is present but wrapped in prose.
 	if result.text != "" {
-		if output, err := parseStructuredTextOutput(result.text, schema); err == nil {
+		output, parseErr := parseStructuredTextOutput(result.text, schema)
+		if parseErr == nil {
 			return &Result{
 				Output:                output,
 				Text:                  result.text,
@@ -276,7 +273,7 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 		// Text is present but contains no parseable JSON — a repair turn via
 		// --resume may recover it by asking for the JSON alone.
 		return nil, &claudeTextNotJSONError{
-			err: fmt.Errorf("claude output parse: no JSON found in prose reply (output snippet: %q)", outputSnippet(result.text)),
+			err: fmt.Errorf("claude output parse: %w (output snippet: %q)", parseErr, outputSnippet(result.text)),
 		}
 	}
 	return nil, errNoStructuredOutput
