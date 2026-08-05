@@ -166,7 +166,7 @@ func TestCIStep_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 	sctx.Ctx = ctx
 
-	step := &CIStep{}
+	step := &CIStep{now: frozenCIClock()}
 	_, err := step.Execute(sctx)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
@@ -229,6 +229,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -267,7 +268,7 @@ func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
+	step := &CIStep{now: frozenCIClock()}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +305,7 @@ func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
+	step := &CIStep{now: frozenCIClock()}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -373,6 +374,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 1 {
@@ -429,6 +431,7 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 
 	waits := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			waits++
 			if waits == 3 {
@@ -477,6 +480,7 @@ func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 
 	waits := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			waits++
 			if waits == 1 {
@@ -549,6 +553,7 @@ func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
 			sctx.Ctx = ctx
 
 			step := &CIStep{
+				now: frozenCIClock(),
 				waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 					cancel()
 					return ctx.Err()
@@ -612,6 +617,7 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			cancel()
@@ -731,6 +737,7 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -803,6 +810,7 @@ func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 
 	phase := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			phase++
 			switch phase {
@@ -863,6 +871,7 @@ func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 	defer cancel()
 	sctx.Ctx = ctx
 	greenStep := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -911,6 +920,7 @@ func TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem(t *testing.T) {
 
 	phase := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			phase++
 			if phase == 1 {
@@ -962,6 +972,7 @@ func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			cancel()
@@ -1415,6 +1426,7 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 3 {
@@ -1517,6 +1529,7 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 4 {
@@ -1590,6 +1603,7 @@ func TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that never escalates must fail the test rather
 		// than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -1670,6 +1684,7 @@ func TestCIStep_UnresolvedCancelledCheckNeverEntersTheAutoFixLoop(t *testing.T) 
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that never escalates must fail the test rather
 		// than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -1753,6 +1768,7 @@ func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 5 {
@@ -1808,6 +1824,7 @@ func TestCIStep_SameNamedCancelledChecksShareOneRerunBudget(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 2 {
@@ -1859,6 +1876,7 @@ func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 
 	pollCalls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that defers this escalation must fail the test
 		// rather than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -1922,6 +1940,7 @@ func TestCIStep_MergeConflictEscalatesWithoutRerunningChecks(t *testing.T) {
 
 	pollCalls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that defers this escalation must fail the test
 		// rather than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -1987,6 +2006,7 @@ func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
 
 	pollCalls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that defers this escalation must fail the test
 		// rather than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -2043,6 +2063,7 @@ func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *te
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that never escalates must fail the test rather
 		// than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -2130,6 +2151,7 @@ func TestCIStep_CancelledCheckAmongPassingChecksEscalatesInsteadOfPollingForever
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: the incident's signature is a monitor that never leaves the
 		// polling loop, so exhausting the polls must fail the test rather than
 		// reproduce the 4-hour wait.
@@ -2225,6 +2247,7 @@ func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t 
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -2289,6 +2312,7 @@ func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that never escalates must fail the test rather
 		// than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -2374,6 +2398,7 @@ func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		// Bounded: a regression that never escalates must fail the test rather
 		// than keep monitoring until the CI timeout.
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -2445,6 +2470,7 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	polls := 0
 	advancedHeadSHA := ""
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls == 1 {
@@ -2526,6 +2552,7 @@ func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 5 {
@@ -2587,6 +2614,7 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 6 {
