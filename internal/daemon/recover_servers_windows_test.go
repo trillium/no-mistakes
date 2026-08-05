@@ -5,6 +5,7 @@ package daemon
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestTerminateOrphanProcessGroup_IgnoresAlreadyExitedTaskkillRace(t *testing.T) {
@@ -27,7 +28,7 @@ func TestTerminateOrphanProcessGroup_IgnoresAlreadyExitedTaskkillRace(t *testing
 		processRunningFunc = oldRunning
 	})
 
-	if err := terminateOrphanProcessGroup(12345); err != nil {
+	if err := terminateOrphanProcessGroup(12345, time.Time{}); err != nil {
 		t.Fatalf("terminateOrphanProcessGroup returned error: %v", err)
 	}
 }

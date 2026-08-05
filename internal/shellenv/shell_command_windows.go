@@ -139,17 +139,25 @@ func StartShellCommand(cmd *exec.Cmd) error {
 // defer it after a successful StartShellCommand so clean exits and ordinary
 // errors get the same process-tree cleanup as context cancellation. A nil or
 // never-started command is a no-op.
-func TerminateShellCommandGroup(cmd *exec.Cmd) {
+//
+// A nil return means the tree is provably gone: the job object was terminated,
+// or the taskkill fallback reported success or "no such process". A non-nil
+// return means survivors may remain, which is what lets a caller holding a
+// crash-recovery record decide to keep it rather than drop it.
+func TerminateShellCommandGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
-		return
+		return nil
 	}
 	if terminateShellCommandJob(cmd, true) {
-		return
+		return nil
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
 	kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
 	winproc.Harden(kill)
-	_ = kill.Run()
+	if err := kill.Run(); err != nil && !isTaskkillAlreadyGone(err) {
+		return fmt.Errorf("taskkill process tree %s: %w", pid, err)
+	}
+	return nil
 }
 
 func newShellCommandJob() (windows.Handle, error) {

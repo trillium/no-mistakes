@@ -121,7 +121,7 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 		}
 		return startedAt.Add(time.Second), nil
 	}
-	terminateOrphanProcessGroupFunc = func(pid int) error {
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
 		t.Fatalf("wizard-owned pid %d should not be terminated", pid)
 		return nil
 	}
@@ -177,7 +177,7 @@ func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenOwnerPIDReused(t *testing
 		}
 	}
 	terminated := 0
-	terminateOrphanProcessGroupFunc = func(pid int) error {
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
 		if pid != 12345 {
 			t.Fatalf("unexpected pid %d", pid)
 		}
@@ -555,7 +555,7 @@ func TestReapOrphanedServers_ReapsNativeAgentLeaderRecord(t *testing.T) {
 	processRunningFunc = func(pid int) (bool, error) { return pid == 12345, nil }
 	processStartTimeFunc = func(pid int) (time.Time, error) { return startedAt, nil }
 	terminated := []int{}
-	terminateOrphanProcessGroupFunc = func(pid int) error {
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
 		terminated = append(terminated, pid)
 		return nil
 	}

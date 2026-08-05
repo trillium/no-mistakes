@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,6 +111,46 @@ func TestStartNativeAgentCommand_NoRecordWithoutDaemonIdentity(t *testing.T) {
 	started.terminate()
 	started.closePipes()
 	_ = started.wait()
+}
+
+// TestStartNativeAgentCommand_KeepsRecordWhenGroupKillFails covers the other
+// half of the invariant above. Dropping the record is only safe because a
+// successful group kill is proof there is nothing left to reap - SIGKILL cannot
+// be caught. When the kill reports failure that proof is gone: descendants may
+// still be running, and this record is the only handle a future daemon has on
+// their process group. Deleting it there would reintroduce exactly the untracked
+// tree the fix exists to prevent.
+func TestStartNativeAgentCommand_KeepsRecordWhenGroupKillFails(t *testing.T) {
+	pidsDir := t.TempDir()
+	SetServerPIDsDirForOwner(pidsDir, ServerPIDOwnerDaemon)
+	t.Cleanup(func() { SetServerPIDsDirForOwner("", "") })
+
+	oldTerminate := terminateShellCommandGroupFunc
+	terminateShellCommandGroupFunc = func(*exec.Cmd) error {
+		return errors.New("group kill failed")
+	}
+	t.Cleanup(func() { terminateShellCommandGroupFunc = oldTerminate })
+
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestNativeAgentRecoveryHelper$")
+	cmd.Env = append(os.Environ(), nativeAgentRecoveryHelperEnv+"=sleep")
+	shellenv.ConfigureShellCommand(cmd)
+
+	started, err := startNativeAgentCommand("claude", cmd)
+	if err != nil {
+		t.Fatalf("startNativeAgentCommand: %v", err)
+	}
+	leader := started.pid()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-leader, syscall.SIGKILL)
+		started.closePipes()
+	})
+
+	started.terminate()
+
+	info := readSoleServerPIDRecord(t, pidsDir)
+	if info.PID != leader {
+		t.Fatalf("recorded pid = %d, want the still-unreaped leader %d", info.PID, leader)
+	}
 }
 
 func readSoleServerPIDRecord(t *testing.T, dir string) ServerPIDInfo {

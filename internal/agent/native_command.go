@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
+
+// terminateShellCommandGroupFunc is a seam: the group kill has no in-process
+// failure mode a test can provoke, but the record-retention branch it guards is
+// exactly the behaviour worth pinning.
+var terminateShellCommandGroupFunc = shellenv.TerminateShellCommandGroup
 
 type nativeAgentCommand struct {
 	cmd            *exec.Cmd
@@ -150,14 +156,22 @@ func (c *nativeAgentCommand) waitForPipes(waitErr error) error {
 	}
 }
 
-// terminate SIGKILLs the leader's whole process group and then drops the
-// crash-recovery record. The order matters: the record must outlive every
-// path on which the group might still have survivors, and SIGKILL is
-// uncatchable, so once the group kill has been issued there is nothing left
-// for a future daemon to reap.
+// terminate SIGKILLs the leader's whole process group and drops the
+// crash-recovery record only once that kill reports success. The order and the
+// condition both matter: the record must outlive every path on which the group
+// might still have survivors. A successful group kill is proof there are none -
+// SIGKILL is uncatchable - so the record has nothing left to describe. A failed
+// one is the opposite: descendants may still be running and this record is the
+// only handle a future daemon has on them, so it stays. Keeping it costs
+// nothing when the leader did die anyway, because reapOrphanedServers discards
+// records whose PID is dead or has been reused without signalling anything.
 func (c *nativeAgentCommand) terminate() {
 	c.terminateOnce.Do(func() {
-		shellenv.TerminateShellCommandGroup(c.cmd)
+		if err := terminateShellCommandGroupFunc(c.cmd); err != nil {
+			slog.Warn("terminate native agent process group; keeping pid record for crash recovery",
+				"pid", c.pid(), "pid_file", c.pidFile, "error", err)
+			return
+		}
 		removeServerPIDFile(c.pidFile)
 	})
 }
