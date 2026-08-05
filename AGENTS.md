@@ -111,6 +111,13 @@ Safest local verification sequence after non-trivial changes:
 - Every invocation of the three commands is logged with caller attribution (PID, PPID, parent command line) via `logLifecycleInvocation` to `<NM_HOME>/logs/cli.log`; this is the incident forensic trail, do not remove or weaken it.
 - Regressions: `TestDaemonStopRefusesWithActiveRunsAndListsThem`, `TestDaemonStopForceOverridesActiveRunGuard`, `TestDaemonRestartRefusesWithActiveRuns`, `TestLifecycleCommandsWriteCallerAttributionToCLILog` (`internal/cli/daemon_lifecycle_test.go`), `TestUpdaterRunRefusesWithActiveRunsAndListsThem`, `TestUpdaterActiveRunGuardAllowsForce` (`internal/update`).
 
+**OpenCode Structured Output (`internal/agent/opencode.go`)**
+
+- A weaker model answers a schema-bearing step in prose, and opencode then reports neither structured output nor an error. `opencodeTurnResult` resolves a turn in this order: structured output, unless it is literally `null` (a `null` unmarshals into any findings struct without error, so trusting it records a fabricated empty result); then any assistant error, by name, not only `StructuredOutputError`; then the reply text. Never let a text-parse failure be the last word - the raw `invalid character` reads like a daemon defect rather than "the model did not answer in JSON".
+- A text-parse failure with a schema earns exactly ONE repair turn, in the SAME session (the point is that the model still holds the context it built), asking for the JSON alone. An assistant error never earns one; opencode already retried internally. A repair turn that cannot be *delivered* returns its own transport error - never re-labelled as prose, or an operator goes swapping models over a dead connection.
+- Any error that quotes agent output must be wrapped in `neverTransient` (`internal/agent/retry.go`). `classifyTransient` is substring matching, so an unwrapped one lets the model decide its own retry: a reply containing "connection refused" reads as a network blip, and for opencode the retry tears down the server and pays for a second full run of a step that was merely the wrong shape.
+- Regressions: `TestOpencodeAgent_*` in `internal/agent/opencode_test.go` covering prose repair, failed repair, repair transport failure, non-structured assistant errors, and `null` structured output.
+
 **Testing Conventions**
 
 - Prefer e2e tests for behavior that crosses a process or I/O boundary (CLI flags, config loading, git operations, agent spawning, daemon coordination, stdout/stderr, recorded fixtures); unit-test pure helpers where speed and failure localization matter. Prefer creating real git repos in temp dirs over heavy mocking.
