@@ -125,8 +125,8 @@ The post-receive hook never blocks an already admitted push - Git ignores its
 exit status. When notify-push fails (daemon rejected the notification or was
 unreachable), the failure is printed to stderr and logged to `notify-push.log`
 in the bare repo for later inspection. When the daemon accepts a notification
-but does not confirm the run within the wait deadline (the ref is stored and run
-creation is underway), an advisory is printed to stderr instead of the "Pipeline
+but does not confirm the run within the wait deadline (the ref is stored; whether
+run creation completed is unconfirmed), an advisory is printed to stderr instead of the "Pipeline
 started" banner, distinguishing a delivered-but-unconfirmed request from an
 actual failure.
 

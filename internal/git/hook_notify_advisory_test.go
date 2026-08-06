@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newAdvisoryHookRepo builds a bare gate plus a work clone whose post-receive
@@ -18,7 +19,10 @@ func pushWithFakeNotify(t *testing.T, fakeScript string) string {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-receive hook is /bin/sh-only")
 	}
-	ctx := context.Background()
+	// Every git child here is bounded: a hung one would otherwise block the
+	// whole test binary rather than fail this test.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
 
 	base := t.TempDir()
 	bare := filepath.Join(base, "test.git")
@@ -33,7 +37,7 @@ func pushWithFakeNotify(t *testing.T, fakeScript string) string {
 		{"-C", work, "remote", "add", "gate", bare},
 		{"-C", work, "commit", "--allow-empty", "-m", "init"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, "git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
@@ -50,7 +54,7 @@ func pushWithFakeNotify(t *testing.T, fakeScript string) string {
 		t.Fatal(err)
 	}
 
-	out, _ := exec.Command("git", "-C", work, "push", "gate", "HEAD:refs/heads/main").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "git", "-C", work, "push", "gate", "HEAD:refs/heads/main").CombinedOutput()
 	return string(out)
 }
 

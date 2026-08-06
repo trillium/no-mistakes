@@ -211,7 +211,9 @@ Also check `<gate-path>/notify-push.log`. The hook now appends daemon notificati
 
 ### A push that says the daemon did not confirm the run
 
-If the push prints `the daemon accepted the notification, but it did not confirm the run`, the push succeeded. The ref is stored on the gate and the daemon owns run creation; only the confirmation outran the hook's wait, which happens when run setup (fetching the trusted default branch, creating the worktree, resolving the agent) takes longer than the hook is willing to block. Run `no-mistakes axi status` to see the run, and `no-mistakes axi run` only if none appears. Nothing was lost and the push does not need to be repeated.
+If the push prints `the daemon accepted the notification, but it did not confirm the run`, the push itself succeeded and does not need to be repeated: `post-receive` runs after the ref is already stored on the gate. What is unknown is how far the daemon got before the hook stopped waiting. Run setup (fetching the trusted default branch, creating the worktree, resolving the agent) can take longer than the hook is willing to block, and the deadline can expire at any point in it — so the run may already exist, or may never have been created.
+
+Run `no-mistakes axi status` to find out, and `no-mistakes axi run` only if no run appears. Do not assume either outcome without checking.
 
 A `notify-push failed` message is different: it means the daemon rejected the notification or was unreachable, and no run exists.
 

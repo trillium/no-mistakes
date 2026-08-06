@@ -69,6 +69,12 @@ func IsResponseTimeout(err error) bool {
 	return errors.As(err, &timeoutErr)
 }
 
+// ErrConnectionAbandoned reports a call on a client whose stream is no longer
+// trustworthy: an earlier request was written and its response never consumed,
+// so the very next line on that connection may be the abandoned reply rather
+// than the new one. Retrying requires a fresh Dial.
+var ErrConnectionAbandoned = errors.New("ipc: connection abandoned after an unanswered request; dial a new client")
+
 func connectTimeout() time.Duration {
 	value := os.Getenv("NM_DAEMON_CONNECT_TIMEOUT")
 	if value == "" {
@@ -95,6 +101,27 @@ type Client struct {
 	encoder *json.Encoder
 	scanner *bufio.Scanner
 	mu      sync.Mutex // serializes calls on a single connection
+	// abandoned is set once a request was written whose response was never
+	// read off the wire. It poisons the client rather than merely recording
+	// the failure, because the connection is out of sync from that point on.
+	abandoned error
+}
+
+// abandon closes the connection and poisons the client for every later call.
+// Reached when a request has been written but its response not consumed - a
+// read-deadline expiry or a cancellation - after which the stream is out of
+// sync: a subsequent call could re-encode onto a dead connection, resurface the
+// stored scanner error, or read the late reply to the abandoned request as its
+// own answer (robots-8bao). Callers must dial a new Client to retry.
+// The caller holds c.mu.
+func (c *Client) abandon(method string, cause error) {
+	if c.abandoned == nil {
+		// The cause is formatted, not wrapped: it explains what went wrong
+		// last time and must not let a later call be misclassified as, say,
+		// a response timeout of its own.
+		c.abandoned = fmt.Errorf("%w (previous %s call: %v)", ErrConnectionAbandoned, method, cause)
+	}
+	c.conn.Close()
 }
 
 const (
@@ -152,6 +179,9 @@ func (c *Client) CallWithTimeout(method string, params interface{}, result inter
 func (c *Client) CallWithContext(ctx context.Context, method string, params interface{}, result interface{}, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.abandoned != nil {
+		return c.abandoned
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -182,24 +212,32 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 	}()
 
 	if !c.scanner.Scan() {
+		// The request is on the wire with no answer read back, so every exit
+		// from here abandons the connection.
+		//
 		// Cancellation is checked first because the interrupt above forces the
 		// read deadline to now, which surfaces as the same i/o timeout a real
 		// deadline expiry does. Only an expiry we actually waited out is a
 		// response timeout.
 		if err := ctx.Err(); err != nil {
+			c.abandon(method, err)
 			return err
 		}
 		if err := c.scanner.Err(); err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return fmt.Errorf("read response: %w", &ResponseTimeoutError{
+				timeoutErr := fmt.Errorf("read response: %w", &ResponseTimeoutError{
 					Method:          method,
 					TimeoutDuration: timeout,
 					Err:             err,
 				})
+				c.abandon(method, timeoutErr)
+				return timeoutErr
 			}
+			c.abandon(method, err)
 			return fmt.Errorf("read response: %w", err)
 		}
+		c.abandon(method, errors.New("connection closed"))
 		return fmt.Errorf("read response: connection closed")
 	}
 

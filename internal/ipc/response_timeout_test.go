@@ -75,6 +75,58 @@ func TestCallResponseTimeoutIsDistinguishableFromOtherFailures(t *testing.T) {
 	}
 }
 
+// Once a request is written and its response never read, the connection is out
+// of sync: the next line on it is the abandoned reply, not the new call's
+// answer. The client must refuse to reuse it rather than hand a caller someone
+// else's response.
+func TestAbandonedConnectionRefusesLaterCalls(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	srv.Handle("slow", func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		select {
+		case <-released:
+		case <-ctx.Done():
+		}
+		return map[string]string{"ok": "yes"}, nil
+	})
+	srv.Handle("fast", func(context.Context, json.RawMessage) (interface{}, error) {
+		return map[string]string{"ok": "yes"}, nil
+	})
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	var result json.RawMessage
+	if err := c.CallWithTimeout("slow", nil, &result, 50*time.Millisecond); !ipc.IsResponseTimeout(err) {
+		t.Fatalf("error %v, want a response timeout", err)
+	}
+
+	err = c.Call("fast", nil, &result)
+	if !errors.Is(err, ipc.ErrConnectionAbandoned) {
+		t.Fatalf("reused an abandoned connection: error %v, want ErrConnectionAbandoned", err)
+	}
+	// The abandonment reason must not masquerade as the new call's own outcome.
+	if ipc.IsResponseTimeout(err) {
+		t.Errorf("abandoned-connection error %v misclassified as a response timeout", err)
+	}
+
+	// A fresh connection is the documented way to retry, and still works.
+	c2, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c2.Close()
+	if err := c2.Call("fast", nil, &result); err != nil {
+		t.Fatalf("fresh client after abandonment: %v", err)
+	}
+}
+
 // A cancelled context must keep reporting cancellation. The cancel path works by
 // forcing the read deadline to now, which produces the same underlying i/o
 // timeout as a real deadline expiry - so the two must not be conflated.

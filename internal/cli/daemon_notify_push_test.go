@@ -16,6 +16,9 @@ import (
 // socket under a fresh NM_HOME, so `daemon notify-push` runs end to end.
 func startNotifyPushDaemon(t *testing.T, handler ipc.HandlerFunc) {
 	t.Helper()
+	// HOME is isolated alongside NM_HOME: anything that falls back to the real
+	// home would read the developer's own daemon state and config.
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NM_HOME", makeSocketSafeTempDir(t))
 
 	p, err := paths.New()
@@ -38,13 +41,20 @@ func startNotifyPushDaemon(t *testing.T, handler ipc.HandlerFunc) {
 			t.Error("fake daemon did not stop")
 		}
 	})
+	// A socket that never accepts would otherwise leave every test below
+	// asserting against a connect failure instead of the behaviour it names.
+	ready := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if client, dialErr := ipc.Dial(p.Socket()); dialErr == nil {
 			client.Close()
+			ready = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("fake daemon socket %s never accepted a connection", p.Socket())
 	}
 }
 
@@ -64,9 +74,10 @@ func runNotifyPush(t *testing.T, gate string) (string, error) {
 	return out.String(), err
 }
 
-// The ref is already stored and the daemon owns run creation by the time it
-// stops answering, so a missing confirmation must not present as a failed push.
-// It exits 0 and names the recovery command instead (robots-8bao).
+// The ref is already stored by the time the daemon stops answering, so a
+// missing confirmation must not present as a failed push. It exits 0, says the
+// run state is unconfirmed, and names the check and recovery commands instead
+// of the old bare exit-1 socket error (robots-8bao).
 func TestNotifyPushUnconfirmedResponseIsNotAPushFailure(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -88,7 +99,8 @@ func TestNotifyPushUnconfirmedResponseIsNotAPushFailure(t *testing.T) {
 	}
 	for _, want := range []string{
 		"did not confirm",
-		"not a failed push",
+		"The push itself succeeded",
+		"unconfirmed",
 		"no-mistakes axi status",
 		"no-mistakes axi run",
 	} {

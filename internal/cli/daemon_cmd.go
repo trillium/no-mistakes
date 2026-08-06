@@ -100,10 +100,17 @@ var notifyPushCallTimeout = 60 * time.Second
 // signal, so it must stand alone in place of the "Pipeline started" banner and
 // name both the check and the recovery command - neither of which appeared
 // anywhere in the old failure text.
+//
+// It claims exactly one thing: the push landed. That much is certain, because
+// post-receive runs after the ref is already stored. Whether the daemon got far
+// enough to create the run is genuinely unknown here - the deadline can expire
+// at any point in its handler - so the advisory says so and makes `axi status`
+// the deciding check rather than asserting an outcome it cannot see.
 func unconfirmedNotifyPushAdvisory(ref string, waited time.Duration) string {
 	return fmt.Sprintf(`no-mistakes: %s was pushed and the daemon accepted the notification,
-but it did not confirm the run within %s. This is not a failed push:
-the ref is stored on the gate and the pipeline is most likely already running.
+but it did not confirm the run within %s. The push itself succeeded - the ref is
+stored on the gate - so it does not need to be repeated. Whether the run was
+created is unconfirmed; check before assuming either way.
 
   check:   no-mistakes axi status
   recover: no-mistakes axi run   (only if no run appears)
@@ -150,7 +157,12 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			defer client.Close()
 
 			var result ipc.PushReceivedResult
-			err = client.CallWithTimeout(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			// The context is threaded through rather than using
+			// CallWithTimeout, which supplies context.Background(): this is a
+			// 60-second block on the pushing client, and an interrupt during it
+			// must stay a failure rather than become a successful unconfirmed
+			// notification.
+			err = client.CallWithContext(cmd.Context(), ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate:      gatePath,
 				Ref:       ref,
 				Old:       oldSHA,
