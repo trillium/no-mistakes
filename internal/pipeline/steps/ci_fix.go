@@ -69,6 +69,15 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		- Verify the fix by running the most relevant commands locally before finishing.`
 	}
 
+	// The branch already carries the author's submitted work and every earlier
+	// pipeline fix commit. Stating that boundary in the prompt is the first line
+	// of defense; assertBranchWorkPreserved on the push path is the enforced
+	// one (robots-1o2m, where an agent reset to the base branch and the pipeline
+	// force-replaced the branch with an 8-line rewrite).
+	promptRules += `
+		- Commit your fixes ON TOP of the current branch head. Never reset, drop, squash away, or replace commits that are already on this branch; rebasing onto the base branch is the only history rewrite allowed, and it must preserve every existing commit's changes.
+		- If you believe the work already on this branch is wrong, say so in your summary and leave it in place. Do not rewrite it away.`
+
 	prompt := fmt.Sprintf(
 		`%s
 
@@ -159,6 +168,25 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	// commit that reached origin out of band. resolveForcePushDecision refuses
 	// the push when the remote carries commits this run never incorporated.
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
+	// The CI fix agent is the one pipeline actor allowed to rewrite branch history
+	// (the merge-conflict prompt asks it to rebase), so it is the one that can
+	// replace the branch outright. Post-review steps guard that with
+	// assertPipelineHeadContinuity, which a legitimate rebase here would trip;
+	// this content check is the equivalent that survives one. It runs before the
+	// remote decision because a head that drops the run's own work must never
+	// reach a push path at all.
+	if sctx.Run.SubmittedHeadSHA != nil {
+		if err := assertBranchWorkPreserved(gitRun, newHeadSHA, *sctx.Run.SubmittedHeadSHA, "the submitted head"); err != nil {
+			return false, err
+		}
+	}
+	// runs.head_sha adds the pipeline's own fix commits to the submitted work.
+	// The gate rule keeps those present too - the incident dropped the document
+	// commit alongside the author's - so an agent may not squash or amend them
+	// away either.
+	if err := assertBranchWorkPreserved(gitRun, newHeadSHA, sctx.Run.HeadSHA, "the pipeline's last recorded head"); err != nil {
+		return false, err
+	}
 	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
 	if err != nil {
 		return false, err
