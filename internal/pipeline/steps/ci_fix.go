@@ -71,7 +71,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 
 	// The branch already carries the author's submitted work and every earlier
 	// pipeline fix commit. Stating that boundary in the prompt is the first line
-	// of defense; assertSubmittedWorkPreserved on the push path is the enforced
+	// of defense; assertBranchWorkPreserved on the push path is the enforced
 	// one (robots-1o2m, where an agent reset to the base branch and the pipeline
 	// force-replaced the branch with an 8-line rewrite).
 	promptRules += `
