@@ -176,9 +176,16 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	// remote decision because a head that drops the run's own work must never
 	// reach a push path at all.
 	if sctx.Run.SubmittedHeadSHA != nil {
-		if err := assertSubmittedWorkPreserved(gitRun, newHeadSHA, *sctx.Run.SubmittedHeadSHA); err != nil {
+		if err := assertBranchWorkPreserved(gitRun, newHeadSHA, *sctx.Run.SubmittedHeadSHA, "the submitted head"); err != nil {
 			return false, err
 		}
+	}
+	// runs.head_sha adds the pipeline's own fix commits to the submitted work.
+	// The gate rule keeps those present too - the incident dropped the document
+	// commit alongside the author's - so an agent may not squash or amend them
+	// away either.
+	if err := assertBranchWorkPreserved(gitRun, newHeadSHA, sctx.Run.HeadSHA, "the pipeline's last recorded head"); err != nil {
+		return false, err
 	}
 	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
 	if err != nil {

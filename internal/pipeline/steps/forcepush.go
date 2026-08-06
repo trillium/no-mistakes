@@ -93,27 +93,29 @@ func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSe
 	return forcePushDecision{}, &forcePushWouldDiscardError{ref: ref, remoteSHA: current, dropped: dropped}
 }
 
-// submittedWorkDroppedError reports that the head about to be pushed does not
-// carry the changes the run was submitted with.
-type submittedWorkDroppedError struct {
-	newHeadSHA    string
-	submittedHead string
-	dropped       []string
+// branchWorkDroppedError reports that the head about to be pushed does not carry
+// changes that are already on the branch. kind names whose work is being
+// dropped, so the message points at the right recovery.
+type branchWorkDroppedError struct {
+	newHeadSHA string
+	kind       string
+	anchorSHA  string
+	dropped    []string
 }
 
-func (e *submittedWorkDroppedError) Error() string {
+func (e *branchWorkDroppedError) Error() string {
 	sample := e.dropped
 	if len(sample) > 5 {
 		sample = sample[:5]
 	}
 	return fmt.Sprintf(
-		"refusing to push %s: it drops %d commit(s) from the submitted head %s (e.g. %s) whose changes are not present in what would be pushed; the branch would be replaced rather than advanced. Commit fixes ON TOP of the current branch head - rebasing is fine, replacing the branch is not. If the submitted work is itself wrong, report it as a finding instead of rewriting it away.",
-		shortSHA(e.newHeadSHA), len(e.dropped), shortSHA(e.submittedHead), strings.Join(shortSHAs(sample), ", "),
+		"refusing to push %s: it drops %d commit(s) from %s %s (e.g. %s) whose changes are not present in what would be pushed; the branch would be replaced rather than advanced. Commit fixes ON TOP of the current branch head - rebasing is fine, replacing the branch is not. If the existing work is itself wrong, report it as a finding instead of rewriting it away.",
+		shortSHA(e.newHeadSHA), len(e.dropped), e.kind, shortSHA(e.anchorSHA), strings.Join(shortSHAs(sample), ", "),
 	)
 }
 
-// assertSubmittedWorkPreserved refuses a push whose head no longer carries the
-// changes the run was submitted with.
+// assertBranchWorkPreserved refuses a push whose head no longer carries the
+// changes already reachable from anchorSHA.
 //
 // resolveForcePushDecision protects the branch only against commits that reached
 // the remote OUT OF BAND: when the remote still points at the head the pipeline
@@ -126,30 +128,44 @@ func (e *submittedWorkDroppedError) Error() string {
 // author's guard, their regression test, and the pipeline's own document commit
 // while leaving the PR looking green.
 //
+// Callers anchor this on both `runs.submitted_head_sha` (the author's work) and
+// `runs.head_sha` (that plus every pipeline fix commit), because the gate rule is
+// that every pipeline fix commit stays present too - dropping the document commit
+// was part of the same incident. Squashing or amending the pipeline's own earlier
+// fix commits is therefore refused as well; the CI fix prompt states that
+// boundary up front so an agent is never surprised by it.
+//
 // The comparison is by patch-id (`--cherry-pick`), never literal ancestry: the
 // merge-conflict CI fix prompt explicitly asks the agent to REBASE onto the base
-// branch, which rewrites every SHA on the branch, so requiring submittedHead to
-// be an ancestor would refuse the exact repair the pipeline requested. A replayed
-// commit keeps its patch-id and is recognized as preserved; a commit that only
-// ever existed on the submitted head is reported as about to be dropped. A
-// deliberate reversal of submitted work stays allowed, because a revert leaves
-// the reverted commit in history rather than removing it.
+// branch, which rewrites every SHA on the branch, so requiring the anchor to be
+// an ancestor would refuse the exact repair the pipeline requested. A replayed
+// commit keeps its patch-id and is recognized as preserved; so is a pipeline fix
+// commit that a rebase legitimately empties because the identical change landed
+// upstream (the upstream copy sits on the other side of the symmetric difference
+// and cancels it). A commit that only ever existed on the anchor is reported as
+// about to be dropped.
 //
-// Fails closed: an unresolvable submitted head or a failing rev-list refuses the
-// push rather than degrading to no check, because this guard is the last thing
+// Reverting is allowed in exactly one shape: a revert commit ON TOP keeps the
+// reverted commit reachable, so the anchor stays an ancestor and nothing is
+// reported. Rewriting history to erase a commit and its revert together IS
+// refused - by patch-id the original is simply gone, and this guard cannot tell
+// that from the incident it exists to stop. Add the revert; do not rewrite.
+//
+// Fails closed: an unresolvable anchor or a failing rev-list refuses the push
+// rather than degrading to no check, because this guard is the last thing
 // standing between an agent's history rewrite and the author's work.
-func assertSubmittedWorkPreserved(gitRun gitRunner, newHeadSHA, submittedHead string) error {
-	submittedHead = strings.TrimSpace(submittedHead)
-	if submittedHead == "" || git.IsZeroSHA(submittedHead) || submittedHead == newHeadSHA {
+func assertBranchWorkPreserved(gitRun gitRunner, newHeadSHA, anchorSHA, kind string) error {
+	anchorSHA = strings.TrimSpace(anchorSHA)
+	if anchorSHA == "" || git.IsZeroSHA(anchorSHA) || anchorSHA == newHeadSHA {
 		return nil
 	}
-	if _, err := gitRun("rev-parse", "--verify", "--quiet", submittedHead+"^{commit}"); err != nil {
-		return fmt.Errorf("refusing to push %s: cannot resolve the submitted head %s to verify the run's own work is preserved: %w",
-			shortSHA(newHeadSHA), shortSHA(submittedHead), err)
+	if _, err := gitRun("rev-parse", "--verify", "--quiet", anchorSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("refusing to push %s: cannot resolve %s %s to verify the run's own work is preserved: %w",
+			shortSHA(newHeadSHA), kind, shortSHA(anchorSHA), err)
 	}
-	out, err := gitRun("rev-list", "--cherry-pick", "--right-only", newHeadSHA+"..."+submittedHead)
+	out, err := gitRun("rev-list", "--cherry-pick", "--right-only", newHeadSHA+"..."+anchorSHA)
 	if err != nil {
-		return fmt.Errorf("verify submitted work is preserved in %s: %w", shortSHA(newHeadSHA), err)
+		return fmt.Errorf("verify %s %s is preserved in %s: %w", kind, shortSHA(anchorSHA), shortSHA(newHeadSHA), err)
 	}
 	var dropped []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -160,7 +176,7 @@ func assertSubmittedWorkPreserved(gitRun gitRunner, newHeadSHA, submittedHead st
 	if len(dropped) == 0 {
 		return nil
 	}
-	return &submittedWorkDroppedError{newHeadSHA: newHeadSHA, submittedHead: submittedHead, dropped: dropped}
+	return &branchWorkDroppedError{newHeadSHA: newHeadSHA, kind: kind, anchorSHA: anchorSHA, dropped: dropped}
 }
 
 // lsRemoteSHA returns the SHA a ref resolves to on a remote, or "" when the ref

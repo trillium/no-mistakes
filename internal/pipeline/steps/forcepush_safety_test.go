@@ -237,6 +237,63 @@ func TestCIStep_CommitAndPush_RefusesToDropTheSubmittedHeadsWork(t *testing.T) {
 	}
 }
 
+// The same incident dropped the pipeline's own document commit, not just the
+// author's. The gate rule keeps every pipeline fix commit present too, so a head
+// that preserves the submitted work but squashes away a pipeline commit is
+// refused on the runs.head_sha anchor rather than the submitted-head one.
+func TestCIStep_CommitAndPush_RefusesToDropAPipelineFixCommit(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "guard.go"), []byte("the fix"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix(spawn): keep the guard")
+	submittedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	os.WriteFile(filepath.Join(dir, "docs.md"), []byte("documented"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(document): record the guard")
+	pipelineSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// The fix agent rewinds to the submitted head - keeping the author's work but
+	// dropping the pipeline's document commit - and edits from there.
+	gitCmd(t, dir, "reset", "--hard", submittedSHA)
+	os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("cross-platform"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, submittedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = pipelineSHA
+
+	pushed, err := (&CIStep{}).commitAndPush(sctx)
+	if err == nil {
+		t.Fatalf("expected commitAndPush to refuse a head that drops a pipeline fix commit, got pushed=%v err=nil", pushed)
+	}
+	if pushed {
+		t.Fatalf("expected no push when refusing, got pushed=true")
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "docs.md") {
+		t.Fatalf("the pipeline's document commit was discarded from origin - data loss")
+	}
+}
+
 // The merge-conflict CI fix prompt explicitly tells the agent to rebase onto the
 // base branch, which rewrites every SHA on the branch. The submitted-work guard
 // must recognize the replayed commits by content, or it would refuse the exact
@@ -265,6 +322,13 @@ func TestCIStep_CommitAndPush_AllowsRebaseThatReplaysSubmittedWork(t *testing.T)
 	submittedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
+	// A pipeline fix commit rides along, so the rebase must replay both anchors.
+	os.WriteFile(filepath.Join(dir, "docs.md"), []byte("documented"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(document): record the guard")
+	pipelineSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
 	// main advances, so the fix agent rebases the branch onto it.
 	gitCmd(t, dir, "checkout", "main")
 	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("landed on main"), 0o644)
@@ -281,7 +345,7 @@ func TestCIStep_CommitAndPush_AllowsRebaseThatReplaysSubmittedWork(t *testing.T)
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, submittedSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Run.HeadSHA = submittedSHA // what the pipeline last pushed == remote head
+	sctx.Run.HeadSHA = pipelineSHA // what the pipeline last pushed == remote head
 
 	step := &CIStep{}
 	pushed, err := step.commitAndPush(sctx)
@@ -293,6 +357,9 @@ func TestCIStep_CommitAndPush_AllowsRebaseThatReplaysSubmittedWork(t *testing.T)
 	}
 	if !fileAtRef(t, upstream, "refs/heads/feature", "guard.go") {
 		t.Fatalf("the submitted work is missing from origin after the rebase")
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "docs.md") {
+		t.Fatalf("the pipeline's own fix commit is missing from origin after the rebase")
 	}
 	if !fileAtRef(t, upstream, "refs/heads/feature", "ci-fix.txt") {
 		t.Fatalf("the CI fix is missing from origin")

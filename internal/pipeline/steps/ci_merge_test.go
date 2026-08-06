@@ -223,8 +223,15 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 // robots-1o2m: the CI fix prompt must state the branch-continuity boundary in
 // every mode. The agent that replaced the branch was told to fix failing checks
 // with no word about the commits already on it, so "commit on top" was left to
-// inference. assertSubmittedWorkPreserved enforces this at the push; the prompt
-// is what keeps the agent from wasting a round discovering the refusal.
+// inference.
+//
+// This is deliberately a prompt contract, not a behavior test: the prompt cannot
+// enforce anything, so asserting its text is the only thing to assert. The
+// enforcement it mirrors is covered behaviorally by
+// TestCIStep_CommitAndPush_RefusesToDropTheSubmittedHeadsWork,
+// _RefusesToDropAPipelineFixCommit, and _AllowsRebaseThatReplaysSubmittedWork.
+// The prompt exists so an agent does not burn a fix round discovering the
+// refusal; drop it and the guard still holds, just later and more expensively.
 func TestCIStep_AutoFixPromptForbidsReplacingTheBranch(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
