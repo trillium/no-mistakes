@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
@@ -85,6 +86,31 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 	return cmd
 }
 
+// notifyPushCallTimeout bounds how long the post-receive hook blocks the
+// pushing client while the daemon creates the run. The daemon answers only
+// after real work - a fetch of the trusted default branch, worktree creation,
+// and agent resolution - which was measured at ~40s on a cold repo, so the 30s
+// default call timeout expired mid-flight on healthy pushes (robots-8bao). It
+// is deliberately not unbounded: past this point the advisory below is a better
+// answer than a longer silent stall. Overridable for tests.
+var notifyPushCallTimeout = 60 * time.Second
+
+// unconfirmedNotifyPushAdvisory is the entire output of a successful-but-
+// unconfirmed notification. The hook treats any output as the unconfirmed
+// signal, so it must stand alone in place of the "Pipeline started" banner and
+// name both the check and the recovery command - neither of which appeared
+// anywhere in the old failure text.
+func unconfirmedNotifyPushAdvisory(ref string, waited time.Duration) string {
+	return fmt.Sprintf(`no-mistakes: %s was pushed and the daemon accepted the notification,
+but it did not confirm the run within %s. This is not a failed push:
+the ref is stored on the gate and the pipeline is most likely already running.
+
+  check:   no-mistakes axi status
+  recover: no-mistakes axi run   (only if no run appears)
+
+`, ref, waited)
+}
+
 func newDaemonNotifyPushCmd() *cobra.Command {
 	var gate string
 	var ref string
@@ -124,7 +150,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			defer client.Close()
 
 			var result ipc.PushReceivedResult
-			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			err = client.CallWithTimeout(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate:      gatePath,
 				Ref:       ref,
 				Old:       oldSHA,
@@ -132,7 +158,23 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				SkipSteps: skipSteps,
 				Intent:    intent,
 				Agent:     agentOverride,
-			}, &result)
+			}, &result, notifyPushCallTimeout)
+			if err != nil {
+				// The request was written and the daemon simply outran its
+				// reply: the ref is stored on the gate and run creation is the
+				// daemon's, not ours. Reporting exit 1 here made a healthy push
+				// read as a failed one, so an agent retried the push or
+				// abandoned the PR while the run was already queued
+				// (robots-8bao). Every other failure - no daemon, a closed
+				// connection, an error the daemon itself reported - is evidence
+				// the run does not exist, and still fails.
+				if ipc.IsResponseTimeout(err) {
+					fmt.Fprint(cmd.OutOrStdout(), unconfirmedNotifyPushAdvisory(ref, notifyPushCallTimeout))
+					return nil
+				}
+				return err
+			}
+			return nil
 		},
 	}
 

@@ -42,6 +42,33 @@ func IsConnectTimeout(err error) bool {
 	return errors.As(err, &timeoutErr)
 }
 
+// ResponseTimeoutError reports that a request was written to the daemon but no
+// response arrived before the call deadline. It is deliberately distinct from
+// every other call failure: the daemon received the request and owns whatever it
+// asks for, so only the confirmation is missing. A connect failure, a closed
+// connection, or an RPC error are all evidence the work did NOT happen; this one
+// is not, and a caller that reports it as failed work misleads its user
+// (robots-8bao).
+type ResponseTimeoutError struct {
+	Method          string
+	TimeoutDuration time.Duration
+	Err             error
+}
+
+func (e *ResponseTimeoutError) Error() string {
+	return fmt.Sprintf("daemon accepted %s but did not respond within %s", e.Method, e.TimeoutDuration)
+}
+
+func (e *ResponseTimeoutError) Unwrap() error { return e.Err }
+
+func (e *ResponseTimeoutError) Timeout() bool { return true }
+
+// IsResponseTimeout reports whether err is a delivered-but-unconfirmed request.
+func IsResponseTimeout(err error) bool {
+	var timeoutErr *ResponseTimeoutError
+	return errors.As(err, &timeoutErr)
+}
+
 func connectTimeout() time.Duration {
 	value := os.Getenv("NM_DAEMON_CONNECT_TIMEOUT")
 	if value == "" {
@@ -155,10 +182,22 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 	}()
 
 	if !c.scanner.Scan() {
+		// Cancellation is checked first because the interrupt above forces the
+		// read deadline to now, which surfaces as the same i/o timeout a real
+		// deadline expiry does. Only an expiry we actually waited out is a
+		// response timeout.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := c.scanner.Err(); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return fmt.Errorf("read response: %w", &ResponseTimeoutError{
+					Method:          method,
+					TimeoutDuration: timeout,
+					Err:             err,
+				})
+			}
 			return fmt.Errorf("read response: %w", err)
 		}
 		return fmt.Errorf("read response: connection closed")

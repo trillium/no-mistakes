@@ -209,6 +209,12 @@ If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook w
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
 
+### A push that says the daemon did not confirm the run
+
+If the push prints `the daemon accepted the notification, but it did not confirm the run`, the push succeeded. The ref is stored on the gate and the daemon owns run creation; only the confirmation outran the hook's wait, which happens when run setup (fetching the trusted default branch, creating the worktree, resolving the agent) takes longer than the hook is willing to block. Run `no-mistakes axi status` to see the run, and `no-mistakes axi run` only if none appears. Nothing was lost and the push does not need to be repeated.
+
+A `notify-push failed` message is different: it means the daemon rejected the notification or was unreachable, and no run exists.
+
 ### Check the daemon socket
 
 Both receive hooks talk to the daemon over `~/.no-mistakes/socket`. If the daemon is not running, pre-receive admission fails closed and the push is rejected before any gate ref changes. Start the daemon and push again.
