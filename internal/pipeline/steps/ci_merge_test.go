@@ -220,6 +220,62 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	}
 }
 
+// robots-1o2m: the CI fix prompt must state the branch-continuity boundary in
+// every mode. The agent that replaced the branch was told to fix failing checks
+// with no word about the commits already on it, so "commit on top" was left to
+// inference. assertSubmittedWorkPreserved enforces this at the push; the prompt
+// is what keeps the agent from wasting a round discovering the refusal.
+func TestCIStep_AutoFixPromptForbidsReplacingTheBranch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		failingNames  []string
+		mergeConflict bool
+	}{
+		{name: "failing_checks", failingNames: []string{"build"}},
+		{name: "merge_conflict", mergeConflict: true},
+		{name: "both", failingNames: []string{"build"}, mergeConflict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+
+			var capturedPrompt string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					capturedPrompt = opts.Prompt
+					return &agent.Result{}, nil
+				},
+			}
+
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"build","state":"FAILURE","bucket":"fail"}]`)
+			sctx.Run.PRURL = &prURL
+			sctx.Run.HeadSHA = headSHA
+			sctx.Repo.DefaultBranch = "main"
+
+			host, skip := buildHost(sctx, scm.ProviderGitHub)
+			if host == nil {
+				t.Fatalf("buildHost returned nil: %s", skip)
+			}
+			if _, err := (&CIStep{}).autoFixCI(sctx, host, &scm.PR{Number: "42", URL: prURL}, tc.failingNames, tc.mergeConflict); err != nil {
+				t.Fatalf("auto-fix CI: %v", err)
+			}
+			if !strings.Contains(capturedPrompt, "Commit your fixes ON TOP of the current branch head") {
+				t.Fatalf("CI fix prompt does not require committing on top of the branch head:\n%s", capturedPrompt)
+			}
+			if !strings.Contains(capturedPrompt, "Never reset, drop, squash away, or replace commits that are already on this branch") {
+				t.Fatalf("CI fix prompt does not forbid replacing existing commits:\n%s", capturedPrompt)
+			}
+			if !strings.Contains(capturedPrompt, "say so in your summary and leave it in place") {
+				t.Fatalf("CI fix prompt does not route disagreement to a report instead of a rewrite:\n%s", capturedPrompt)
+			}
+		})
+	}
+}
+
 func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

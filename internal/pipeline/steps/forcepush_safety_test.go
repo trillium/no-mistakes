@@ -162,6 +162,143 @@ func TestPushStep_RefusesToClobberAdvancedUpstreamBranch(t *testing.T) {
 	}
 }
 
+// robots-1o2m regression: the CI fix agent replaced the branch instead of
+// committing on top of it. It reset the worktree to the base branch and
+// committed a small rewrite, so the new head's only parent was the base branch
+// tip and every commit the author submitted - plus the pipeline's own document
+// commit - was gone. resolveForcePushDecision waved it through because the
+// remote still pointed at the head the run last pushed (the `current ==
+// lastSeenSHA` fast path): that check only defends against commits that reached
+// the remote OUT OF BAND, never against the pipeline dropping its own submitted
+// work. The PR then looked green while fixing nothing.
+//
+// commitAndPush must refuse a head that does not carry the submitted head's
+// changes, and leave the remote untouched.
+func TestCIStep_CommitAndPush_RefusesToDropTheSubmittedHeadsWork(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// The author's submitted work: the guard plus the regression test proving it.
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "guard.go"), []byte("the fix"), 0o644)
+	os.WriteFile(filepath.Join(dir, "guard_test.go"), []byte("proves the bug"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix(spawn): keep the guard")
+	submittedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// The pipeline's own document commit lands on top and is pushed, so the
+	// remote head is exactly what the run last recorded.
+	os.WriteFile(filepath.Join(dir, "docs.md"), []byte("documented"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(document): record the guard")
+	pipelineSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// CI comes back red and the fix agent replaces the branch: reset to the base
+	// branch, then a small edit that reintroduces the hole the author closed.
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	os.WriteFile(filepath.Join(dir, "guard.go"), []byte("skip when absent"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, submittedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = pipelineSHA // what the pipeline last pushed == remote head
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err == nil {
+		t.Fatalf("expected commitAndPush to refuse a head that drops the submitted work, got pushed=%v err=nil", pushed)
+	}
+	if pushed {
+		t.Fatalf("expected no push when refusing, got pushed=true")
+	}
+
+	originSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if originSHA != pipelineSHA {
+		t.Fatalf("origin feature SHA = %s, want %s (the branch must not be replaced)", originSHA, pipelineSHA)
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "guard_test.go") {
+		t.Fatalf("the author's regression test was discarded from origin - data loss")
+	}
+}
+
+// The merge-conflict CI fix prompt explicitly tells the agent to rebase onto the
+// base branch, which rewrites every SHA on the branch. The submitted-work guard
+// must recognize the replayed commits by content, or it would refuse the exact
+// repair it asks for.
+func TestCIStep_CommitAndPush_AllowsRebaseThatReplaysSubmittedWork(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "guard.go"), []byte("the fix"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix(spawn): keep the guard")
+	submittedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// main advances, so the fix agent rebases the branch onto it.
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("landed on main"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main moves")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+	gitCmd(t, dir, "rebase", "main")
+
+	// ...and leaves the CI fix uncommitted for commitAndPush to pick up.
+	os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("cross-platform"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, submittedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = submittedSHA // what the pipeline last pushed == remote head
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatalf("expected a rebase that replays the submitted work to push, got: %v", err)
+	}
+	if !pushed {
+		t.Fatalf("expected pushed=true after a legitimate rebase + CI fix")
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "guard.go") {
+		t.Fatalf("the submitted work is missing from origin after the rebase")
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "ci-fix.txt") {
+		t.Fatalf("the CI fix is missing from origin")
+	}
+}
+
 // review-1 regression: a force-push run must not clobber an out-of-band commit
 // on the PR branch. The hazard is the lease fast-path: if the rebase step
 // refreshes origin/<branch> on a force push, the push step's lastSeen anchor

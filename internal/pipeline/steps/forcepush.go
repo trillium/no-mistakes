@@ -93,6 +93,76 @@ func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSe
 	return forcePushDecision{}, &forcePushWouldDiscardError{ref: ref, remoteSHA: current, dropped: dropped}
 }
 
+// submittedWorkDroppedError reports that the head about to be pushed does not
+// carry the changes the run was submitted with.
+type submittedWorkDroppedError struct {
+	newHeadSHA    string
+	submittedHead string
+	dropped       []string
+}
+
+func (e *submittedWorkDroppedError) Error() string {
+	sample := e.dropped
+	if len(sample) > 5 {
+		sample = sample[:5]
+	}
+	return fmt.Sprintf(
+		"refusing to push %s: it drops %d commit(s) from the submitted head %s (e.g. %s) whose changes are not present in what would be pushed; the branch would be replaced rather than advanced. Commit fixes ON TOP of the current branch head - rebasing is fine, replacing the branch is not. If the submitted work is itself wrong, report it as a finding instead of rewriting it away.",
+		shortSHA(e.newHeadSHA), len(e.dropped), shortSHA(e.submittedHead), strings.Join(shortSHAs(sample), ", "),
+	)
+}
+
+// assertSubmittedWorkPreserved refuses a push whose head no longer carries the
+// changes the run was submitted with.
+//
+// resolveForcePushDecision protects the branch only against commits that reached
+// the remote OUT OF BAND: when the remote still points at the head the pipeline
+// itself last pushed (`current == lastSeenSHA`) it takes the fast path and never
+// looks at content at all. That is correct for its own question and useless for
+// this one, because the pipeline is then free to push anything - including a
+// head built straight on the base branch, with every author commit gone. That is
+// robots-1o2m: a CI fix agent reset the worktree to the base branch, committed an
+// 8-line rewrite, and the pipeline force-replaced the branch, dropping the
+// author's guard, their regression test, and the pipeline's own document commit
+// while leaving the PR looking green.
+//
+// The comparison is by patch-id (`--cherry-pick`), never literal ancestry: the
+// merge-conflict CI fix prompt explicitly asks the agent to REBASE onto the base
+// branch, which rewrites every SHA on the branch, so requiring submittedHead to
+// be an ancestor would refuse the exact repair the pipeline requested. A replayed
+// commit keeps its patch-id and is recognized as preserved; a commit that only
+// ever existed on the submitted head is reported as about to be dropped. A
+// deliberate reversal of submitted work stays allowed, because a revert leaves
+// the reverted commit in history rather than removing it.
+//
+// Fails closed: an unresolvable submitted head or a failing rev-list refuses the
+// push rather than degrading to no check, because this guard is the last thing
+// standing between an agent's history rewrite and the author's work.
+func assertSubmittedWorkPreserved(gitRun gitRunner, newHeadSHA, submittedHead string) error {
+	submittedHead = strings.TrimSpace(submittedHead)
+	if submittedHead == "" || git.IsZeroSHA(submittedHead) || submittedHead == newHeadSHA {
+		return nil
+	}
+	if _, err := gitRun("rev-parse", "--verify", "--quiet", submittedHead+"^{commit}"); err != nil {
+		return fmt.Errorf("refusing to push %s: cannot resolve the submitted head %s to verify the run's own work is preserved: %w",
+			shortSHA(newHeadSHA), shortSHA(submittedHead), err)
+	}
+	out, err := gitRun("rev-list", "--cherry-pick", "--right-only", newHeadSHA+"..."+submittedHead)
+	if err != nil {
+		return fmt.Errorf("verify submitted work is preserved in %s: %w", shortSHA(newHeadSHA), err)
+	}
+	var dropped []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			dropped = append(dropped, line)
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	return &submittedWorkDroppedError{newHeadSHA: newHeadSHA, submittedHead: submittedHead, dropped: dropped}
+}
+
 // lsRemoteSHA returns the SHA a ref resolves to on a remote, or "" when the ref
 // does not exist there.
 func lsRemoteSHA(gitRun gitRunner, remote, ref string) (string, error) {
