@@ -449,7 +449,7 @@ func (s *Service) Apply(ctx context.Context) State {
 // Recover treats that user_owned state as an idempotent no-op success.
 //
 // The decision matrix, by worktree relation to the preserved pipeline head P
-// (the gate branch head recorded as the run's head_sha):
+// (the run's head_sha, preserved in the local gate):
 //
 //	relation   worktree  default                        --keep-local
 //	equal      any       anchor locally; return custody same
@@ -468,7 +468,9 @@ func (s *Service) Apply(ctx context.Context) State {
 //	work
 //	diverged   any       refuse (anchor named, manual   custody at local head;
 //	                     reconcile / rerun offered)     gate reset to it (CAS)
-//	P missing  any       refuse                         refuse
+//	P absent   any       refuse                         refuse
+//	from the
+//	gate
 //
 // The containment row exists because a cancelled validation routinely leaves P
 // as a REBASE of the local branch onto a newer base: the same logical commits
@@ -486,9 +488,11 @@ func (s *Service) Apply(ctx context.Context) State {
 //   - The preserved commits must be provably safe before custody moves: when
 //     already reachable from the local branch (equal/ahead), recovery pins the
 //     private anchor ref refs/no-mistakes/recover/<runID> locally without gate
-//     access; otherwise the preserved head is verified at the gate branch head
-//     and fetched into that anchor. The anchor keeps them reachable locally no
-//     matter what later happens to the gate.
+//     access; otherwise the exact recorded head is verified in the local gate -
+//     at its branch head, or in its object store when a detached run worktree
+//     rebased without advancing any gate ref - and fetched into that anchor.
+//     The anchor keeps them reachable locally no matter what later happens to
+//     the gate.
 //   - The only possible worktree mutation is a guarded move of a clean checked-out
 //     branch: a strict fast-forward, or an anchored move to a proven-containing
 //     head performed by Git operations that refuse on their own rather than by a
@@ -587,11 +591,29 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// custody resumes here: the gate already equals the kept local head and
 	// the preserved head is already anchored.
 	resumedKeepLocal := keepLocal && anchored && gateHead == local
-	if gateHead != preserved && !resumedKeepLocal {
+	// The custody claim this state makes is that the preserved commits are
+	// preserved IN THE LOCAL GATE - not that the gate BRANCH ref still points
+	// at them. A run worktree is carved from the gate and detached, so a run
+	// that only rebased writes its preserved head into the gate's object store
+	// without advancing any gate ref, and the branch-ref test alone dead-ended
+	// the exact recovery inspection prescribes (upstream #551).
+	//
+	// The object store is accepted as an anchor source ONLY under the exact
+	// signature of that case: the gate branch still holds this run's SUBMITTED
+	// head, which proves the gate received nothing for this run and so cannot
+	// be carrying work that a stale recorded head would supersede. A gate
+	// branch that moved anywhere else - an out-of-band commit, a partial
+	// pipeline push, a force-push - is the pre-existing fail-closed case and
+	// still refuses, because only the operator can tell a superseded head from
+	// a preserved one.
+	gateHasPreserved := gateHead != preserved && run.SubmittedHeadSHA != nil &&
+		*run.SubmittedHeadSHA != "" && gateHead == *run.SubmittedHeadSHA &&
+		objectExists(ctx, gateDir, preserved)
+	if gateHead != preserved && !gateHasPreserved && !resumedKeepLocal {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
 	}
 	if !anchored {
-		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
+		if fetchErr := s.anchorPreservedFromGate(ctx, wd, gateDir, branch, preserved, anchorRef, run.ID, gateHasPreserved); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
@@ -633,6 +655,28 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
+}
+
+// anchorPreservedFromGate makes the preserved pipeline head reachable in the
+// invoking worktree at anchorRef. The gate branch is the ordinary source. When
+// the gate holds the preserved commit with no ref pointing at it, the fetch
+// has no name to ask for - an unreachable SHA is not fetchable - so an exact
+// gate-side private ref is staged first and removed again afterwards. The
+// staging ref is written with update-ref rather than delivered by a push,
+// which would fire the gate's receive hooks and start a pipeline run. Once the
+// fetch lands, the local anchor keeps the preserved commits reachable no
+// matter what later happens to the gate.
+func (s *Service) anchorPreservedFromGate(ctx context.Context, wd, gateDir, branch, preserved, anchorRef, runID string, fromGateObjects bool) error {
+	if !fromGateObjects {
+		return git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef)
+	}
+	stagingRef := "refs/no-mistakes/preserved/" + runID
+	if _, err := git.Run(ctx, gateDir, "update-ref", stagingRef, preserved); err != nil {
+		return err
+	}
+	_, fetchErr := git.Run(ctx, wd, "fetch", "--no-tags", "--no-write-fetch-head", gateDir, "+"+stagingRef+":"+anchorRef)
+	_, _ = git.Run(ctx, gateDir, "update-ref", "-d", stagingRef)
+	return fetchErr
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the

@@ -1594,3 +1594,209 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 		t.Fatal("dropped-work escalation stamped custody")
 	}
 }
+
+// newDetachedRebaseRecoverFixture reproduces the production shape the plain
+// rebase fixture does not cover: the pipeline rebases inside a DETACHED
+// worktree carved from the bare gate, so the rebased commits are written into
+// the gate's object store while refs/heads/<branch> in the gate never moves.
+// Cancellation then leaves runs.head_sha at a preserved head that exists in
+// the gate as an unreferenced object, with the gate branch still at the
+// submitted head.
+func newDetachedRebaseRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	remote := filepath.Join(root, "upstream.git")
+	mustRun(t, root, "init", "--bare", remote)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	configureIdentity(t, local)
+	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
+	mustRun(t, local, "add", "file.txt")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+
+	mustRun(t, local, "checkout", "-b", "feature/recover")
+	mustWrite(t, filepath.Join(local, "feature.txt"), "feature one\n")
+	mustRun(t, local, "add", "feature.txt")
+	mustRun(t, local, "commit", "-m", "feature one")
+	mustWrite(t, filepath.Join(local, "feature.txt"), "feature one\nfeature two\n")
+	mustRun(t, local, "commit", "-am", "feature two")
+	submitted := mustRun(t, local, "rev-parse", "HEAD")
+
+	// The default branch advances after submission; that is what makes the
+	// pipeline rebase produce new SHAs for the same logical commits.
+	mustRun(t, local, "checkout", "main")
+	mustWrite(t, filepath.Join(local, "upstream.txt"), "upstream advance\n")
+	mustRun(t, local, "add", "upstream.txt")
+	mustRun(t, local, "commit", "-m", "upstream advance")
+	mustRun(t, local, "checkout", "feature/recover")
+
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, local, "push", gate, "refs/heads/main:refs/heads/main", "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	// The run worktree shares the gate's object store and is detached, so the
+	// rebase advances no gate ref at all.
+	pipeline := filepath.Join(root, "pipeline")
+	mustRun(t, gate, "worktree", "add", "--detach", pipeline, "refs/heads/feature/recover")
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "rebase", "refs/heads/main")
+	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, gate, "worktree", "remove", "--force", pipeline)
+
+	if got := mustRun(t, gate, "rev-parse", "refs/heads/feature/recover"); got != submitted {
+		t.Fatalf("fixture moved the gate branch to %s, want the submitted head %s", got, submitted)
+	}
+	if preserved == submitted {
+		t.Fatal("fixture rebase did not move the preserved head")
+	}
+
+	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(local, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, status, preserved); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = database.GetRun(run.ID)
+	return &recoverFixture{
+		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
+		local:   local, gate: gate, remote: remote,
+		base: base, submitted: submitted, preserved: preserved,
+	}
+}
+
+// TestRecoverDetachedPreservedHeadIsNotADeadEnd is the regression for the
+// reported defect: inspection classifies the stranded branch
+// blocked_pipeline_owned_recoverable and prescribes `axi sync --recover`, but
+// recovery refused that exact command because the gate BRANCH head was not the
+// preserved head. The preserved commits are in the gate's object store, which
+// is the custody claim the state makes, so recovery must anchor them by their
+// exact recorded SHA and complete instead of dead-ending.
+func TestRecoverDetachedPreservedHeadIsNotADeadEnd(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Safety != "blocked_pipeline_owned_recoverable" || state.NextAction == nil ||
+		state.NextAction.Code != "recover_custody" {
+		t.Fatalf("inspection did not prescribe custody recovery: %#v", state)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered {
+		t.Fatalf("recovery refused the prescribed command: safety = %s, error = %q", recovered.Safety, recovered.Error)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("recovery reported success without stamping custody")
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("preserved head anchored at %s, want %s", got, f.preserved)
+	}
+	// The rebase carries every local change, so the proven adoption applies.
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want the adopted preserved head %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()+"^{commit}"); got != f.submitted {
+		t.Fatalf("pre-recovery local head anchored at %s, want %s", got, f.submitted)
+	}
+}
+
+// TestRecoverDetachedPreservedHeadKeepLocalReturnsCustody pins the other exit
+// the stranded operator must have: keeping the current local head. The gate
+// branch already equals that head here, so nothing moves except the custody
+// stamp, and the preserved commits stay reachable through the anchor.
+func TestRecoverDetachedPreservedHeadKeepLocalReturnsCustody(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered {
+		t.Fatalf("keep-local recovery refused: safety = %s, error = %q", recovered.Safety, recovered.Error)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("keep-local moved HEAD to %s, want %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("preserved head anchored at %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("keep-local moved the gate branch to %s, want %s", got, f.submitted)
+	}
+}
+
+// TestRecoverStillRefusesPreservedHeadMissingFromTheGate pins the fail-safe
+// the fallback must not weaken: a preserved head that neither the gate branch
+// nor the gate object store holds is unverifiable and still refuses.
+func TestRecoverStillRefusesPreservedHeadMissingFromTheGate(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+	unknown := strings.Repeat("0", 39) + "1"
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, unknown); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatal("recovery accepted a preserved head the gate does not have")
+	}
+	if f.custodyReturned() {
+		t.Fatal("unverifiable recovery stamped custody")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("unverifiable recovery moved HEAD to %s", got)
+	}
+}
+
+// TestRecoverStillRefusesWhenTheGateBranchLeftTheSubmittedHead pins the bound
+// on the object-store anchor source. It is accepted only under the exact
+// detached-rebase signature - the gate branch still holding this run's
+// submitted head, proving the gate received nothing for the run. A gate branch
+// that moved anywhere else may be carrying work the recorded head would
+// supersede, so it stays the pre-existing fail-closed refusal even though the
+// preserved commits are sitting in the same object store.
+func TestRecoverStillRefusesWhenTheGateBranchLeftTheSubmittedHead(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "other.txt"), "other\n")
+	mustRun(t, writer, "add", "other.txt")
+	mustRun(t, writer, "commit", "-m", "out of band gate commit")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+
+	if !objectExists(f.ctx, f.gate, f.preserved) {
+		t.Fatal("fixture lost the preserved object from the gate")
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_diverged" {
+		t.Fatalf("moved gate branch was recovered from the object store: %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("moved-gate refusal stamped custody")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("moved-gate refusal moved HEAD to %s", got)
+	}
+}
