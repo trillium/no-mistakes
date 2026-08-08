@@ -57,8 +57,16 @@ fi
 trap 'reap_inventory; if [[ "${OWNED_INVENTORY}" -eq 1 ]]; then rm -rf "$NM_E2E_DAEMON_INVENTORY" 2>/dev/null || true; fi' EXIT INT TERM
 
 # Default args match the historical Makefile e2e target; callers may override.
+#
+# The timeout is a per-binary budget, and internal/e2e is serial: every test
+# builds a repo, starts a temporary daemon, and drives a full pipeline. It was
+# 300s when the suite was three journeys (#138) and was never raised as the
+# suite grew past two dozen tests, so a healthy full run now overruns it and
+# go test panics mid-test - which reads as a hang rather than "too slow".
+# A measured serial run is ~440s; 900s matches the unit job's -timeout=15m and
+# leaves headroom for a loaded CI runner.
 if [[ "$#" -eq 0 ]]; then
-  set -- -tags=e2e -count=1 -timeout 300s ./internal/e2e/... ./internal/pipeline/steps/...
+  set -- -tags=e2e -count=1 -timeout 900s ./internal/e2e/... ./internal/pipeline/steps/...
 fi
 
 go test "$@"

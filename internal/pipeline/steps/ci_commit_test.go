@@ -341,6 +341,10 @@ func TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	// TestMain points GIT_CONFIG_GLOBAL at an empty file so the suite ignores
+	// the developer's own config; this test is specifically about inheriting
+	// global credential config, so aim it at the fixture written above.
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
 
 	realGit, err := exec.LookPath("git")
 	if err != nil {
