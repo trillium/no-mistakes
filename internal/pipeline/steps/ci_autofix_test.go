@@ -81,6 +81,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	// Expect explicit context cancellation after the second poll, once the post-fix wait path is exercised.
 	if err == nil || !errors.Is(err, context.Canceled) {
@@ -138,6 +139,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome, got error: %v", err)
@@ -242,6 +244,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome, got error: %v", err)
@@ -336,6 +339,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
@@ -610,6 +614,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
@@ -701,6 +706,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -782,6 +788,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
@@ -879,6 +886,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err = step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation after manual CI fix attempt, got %v", err)
@@ -950,6 +958,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome, got error: %v", err)
@@ -1058,6 +1067,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("expected approval outcome, got error: %v", err)
@@ -1143,6 +1153,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	step.Execute(sctx)
 
 	if capturedPrompt == "" {

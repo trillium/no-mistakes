@@ -234,6 +234,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected polling to continue after head reconciliation, got %v", err)
@@ -268,6 +269,7 @@ func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -305,6 +307,7 @@ func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{}
+	useSimulatedCIClock(t, step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -382,6 +385,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
@@ -438,6 +442,7 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected open PR monitoring to continue, got %v", err)
@@ -493,6 +498,7 @@ func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected open PR monitoring to continue, got %v", err)
@@ -554,6 +560,7 @@ func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
 					return ctx.Err()
 				},
 			}
+			useSimulatedCIClock(t, step)
 			_, err := step.Execute(sctx)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("expected open PR monitoring to continue, got %v", err)
@@ -618,6 +625,7 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
@@ -736,6 +744,7 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected continued monitoring after declared no-CI ready, got %v", err)
@@ -968,6 +977,7 @@ func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
