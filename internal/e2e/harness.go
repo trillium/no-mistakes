@@ -173,9 +173,26 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	return h
 }
 
+// writeLoginShellPathSeed puts BinDir at the front of PATH for every startup
+// file the daemon's login-shell probe can read. The daemon replaces its own
+// PATH with whatever that probe returns (internal/shellenv), so the stub
+// binaries only shadow real tools if the seed survives to the end of shell
+// startup.
+//
+// The interactive rc files matter as much as the profile files: shellenv
+// probes bash and zsh with `-l -i`, and zsh sources /etc/zshrc after both
+// ~/.zshenv and ~/.zprofile. On a machine whose /etc/zshrc runs
+// `eval "$(brew shellenv)"` (the Homebrew default on macOS), that system file
+// prepends /opt/homebrew/bin and demotes BinDir - so the pipeline reached the
+// real, authenticated `gh` instead of the fakeagent stub and TestForkRouting
+// talked to github.com. Seeding ~/.zshrc and ~/.bashrc, which are sourced
+// last, puts BinDir back in front.
 func (h *Harness) writeLoginShellPathSeed() {
 	line := "export PATH=" + shellQuote(h.BinDir) + ":$PATH\n"
-	for _, name := range []string{".zshenv", ".zprofile", ".bash_profile", ".profile"} {
+	for _, name := range []string{
+		".zshenv", ".zprofile", ".zshrc", ".zlogin",
+		".bash_profile", ".bashrc", ".profile",
+	} {
 		if err := os.WriteFile(filepath.Join(h.HomeDir, name), []byte(line), 0o644); err != nil {
 			h.t.Fatalf("write %s: %v", name, err)
 		}

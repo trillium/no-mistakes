@@ -23,7 +23,26 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Exit(m.Run())
+	// Detach every git invocation in this package from the developer's own
+	// global and system config, the same way internal/git's TestMain does.
+	// These tests assert on raw git behaviour, so a personal setting silently
+	// changes the outcome: `rebase.autostash = true` stashes the dirty tree
+	// the rebase-failure tests deliberately create, the rebase then succeeds,
+	// and the tests fail on a machine that has it. Tests that need specific
+	// global config point GIT_CONFIG_GLOBAL at their own fixture file.
+	dir, err := os.MkdirTemp("", "no-mistakes-steps-tests-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "gitconfig")); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("GIT_CONFIG_NOSYSTEM", "1"); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func handleFakeCLI(mode string) {
