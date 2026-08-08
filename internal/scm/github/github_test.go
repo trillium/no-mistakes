@@ -774,7 +774,7 @@ func TestAvailableBoundsTheEchoedGhOutput(t *testing.T) {
 	if !strings.Contains(err.Error(), "(truncated)") {
 		t.Fatalf("Available() error = %v, want a truncation marker", err)
 	}
-	if len(err.Error()) > maxAuthFailureDetailBytes+256 {
+	if len(err.Error()) > scm.AuthFailureDetailMaxBytes+256 {
 		t.Fatalf("Available() error length = %d, want bounded", len(err.Error()))
 	}
 }

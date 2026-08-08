@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -592,6 +593,88 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 
 	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
 		t.Fatal("GetChecks() error = nil, want decode error surfaced from the corrupt page")
+	}
+}
+
+func TestGitlabAvailableTreatsValidationFailureWithStoredCredentialAsAvailable(t *testing.T) {
+	t.Parallel()
+
+	// `glab auth status` reaches the GitLab API to validate the token, so a
+	// network outage, an unreachable instance, or a proxy error exits non-zero
+	// for a perfectly good credential. A credential IS on file, so the host must
+	// stay available and let the real glab call surface any genuine provider error.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status --hostname gitlab.com": {
+			stderr: "ERRO Failed to log in to gitlab.com: GET https://gitlab.com/api/v4/user: dial tcp: lookup gitlab.com: no such host\n",
+			code:   1,
+		},
+		"glab config get token --host gitlab.com": {stdout: "glpat-exampletoken\n"},
+	}), func() bool { return true }, "gitlab.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (stored credential must not be a false negative)", err)
+	}
+}
+
+func TestGitlabAvailableReportsGlabOutputWhenNoCredentialIsStored(t *testing.T) {
+	t.Parallel()
+
+	// With no credential on file the host really is unauthenticated. The error
+	// must carry glab's own explanation and name the host.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status --hostname gitlab.com": {
+			stderr: "ERRO No GitLab instance found. Run `glab auth login` to authenticate.\n",
+			code:   1,
+		},
+		"glab config get token --host gitlab.com": {stderr: "configuration key 'token' not found\n", code: 1},
+	}), func() bool { return true }, "gitlab.com", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want unauthenticated error")
+	}
+	if errors.Is(err, scm.ErrCLINotInstalled) {
+		t.Fatalf("Available() error = %v, must not be ErrCLINotInstalled (glab is installed)", err)
+	}
+	if !strings.Contains(err.Error(), "gitlab.com") {
+		t.Fatalf("Available() error = %v, want the host named", err)
+	}
+	if !strings.Contains(err.Error(), "glab auth login") {
+		t.Fatalf("Available() error = %v, want glab's own explanation echoed", err)
+	}
+}
+
+func TestGitlabAvailableMarksAMissingCLIAsNotInstalled(t *testing.T) {
+	t.Parallel()
+
+	// A missing binary is the one availability failure a step may skip on, so
+	// it must be distinguishable with errors.Is.
+	host := New(gitlabTestCmdFactory(nil), func() bool { return false }, "gitlab.com", "")
+
+	err := host.Available(context.Background())
+	if !errors.Is(err, scm.ErrCLINotInstalled) {
+		t.Fatalf("Available() error = %v, want ErrCLINotInstalled", err)
+	}
+}
+
+func TestGitlabAvailableBoundsTheEchoedGlabOutput(t *testing.T) {
+	t.Parallel()
+
+	// glab's output is untrusted third-party text on a user-facing error path.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status --hostname gitlab.com": {stderr: strings.Repeat("x", 4096), code: 1},
+		"glab config get token --host gitlab.com": {code: 1},
+	}), func() bool { return true }, "gitlab.com", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want unauthenticated error")
+	}
+	if !strings.Contains(err.Error(), "(truncated)") {
+		t.Fatalf("Available() error = %v, want a truncation marker", err)
+	}
+	if len(err.Error()) > scm.AuthFailureDetailMaxBytes+256 {
+		t.Fatalf("Available() error length = %d, want bounded", len(err.Error()))
 	}
 }
 

@@ -194,7 +194,7 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.credentialStored(ctx) {
 		return nil
 	}
-	return fmt.Errorf("gh CLI is not authenticated for %s: %s", h.authHostLabel(), authFailureDetail(out, err))
+	return fmt.Errorf("gh CLI is not authenticated for %s: %s", h.authHostLabel(), scm.AuthFailureDetail(out, err))
 }
 
 // credentialStored reports whether gh holds a token for this repo's host. It
@@ -217,26 +217,6 @@ func (h *Host) authHostLabel() string {
 	return "any configured host"
 }
 
-// maxAuthFailureDetailBytes bounds the provider output echoed into the step
-// log. gh masks tokens in its own output, but the excerpt is still untrusted
-// third-party text on a user-facing error path, so keep it short.
-const maxAuthFailureDetailBytes = 512
-
-// authFailureDetail renders gh's own explanation for the failed auth check.
-// The old code discarded it entirely and asserted "gh CLI is not
-// authenticated", which told an authenticated operator nothing they could act
-// on. Falls back to the exec error when gh printed nothing (e.g. it could not
-// be started at all).
-func authFailureDetail(out []byte, err error) string {
-	detail := strings.TrimSpace(string(out))
-	if detail == "" {
-		return err.Error()
-	}
-	if len(detail) > maxAuthFailureDetailBytes {
-		detail = detail[:maxAuthFailureDetailBytes] + " ... (truncated)"
-	}
-	return strings.Join(strings.Fields(detail), " ")
-}
 
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
 	args := []string{"pr", "list", "--head", branch}
