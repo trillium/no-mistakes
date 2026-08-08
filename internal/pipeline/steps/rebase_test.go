@@ -311,6 +311,84 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	}
 }
 
+// TestRebaseStep_AutostashConfigDoesNotHideNonConflictFailure pins the pipeline
+// rebase against an ambient rebase.autostash. With autostash enabled, git
+// silently stashes a dirty worktree, rebases, and reapplies it, so a rebase
+// that must refuse turns into a success and the uncommitted work only exists in
+// a stash the pipeline never reports. The step must see the same refusal on
+// every host regardless of the operator's git configuration.
+func TestRebaseStep_AutostashConfigDoesNotHideNonConflictFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		fixing bool
+	}{
+		{name: "normal_mode", fixing: false},
+		{name: "fix_mode", fixing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
+
+			dir := t.TempDir()
+			gitCmd(t, dir, "init")
+			gitCmd(t, dir, "config", "user.name", "test")
+			gitCmd(t, dir, "config", "user.email", "test@test.com")
+			// Repository-local config wins over the ambient global value, so this
+			// test asserts the same thing whether or not the host sets it.
+			gitCmd(t, dir, "config", "rebase.autostash", "true")
+			gitCmd(t, dir, "checkout", "-b", "main")
+			gitCmd(t, dir, "remote", "add", "origin", upstream)
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "base commit")
+			baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "push", "origin", "main")
+
+			gitCmd(t, dir, "checkout", "-b", "feature")
+			os.WriteFile(filepath.Join(dir, "b.txt"), []byte("feature\n"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "feature change")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+			gitCmd(t, dir, "checkout", "main")
+			os.WriteFile(filepath.Join(dir, "c.txt"), []byte("main\n"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "main advance")
+			gitCmd(t, dir, "push", "origin", "main")
+			gitCmd(t, dir, "checkout", "feature")
+
+			// Dirty the working tree so the rebase must fail without conflict.
+			os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
+
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Repo.UpstreamURL = upstream
+			sctx.Fixing = tc.fixing
+
+			step := &RebaseStep{}
+			if _, err := step.Execute(sctx); err == nil {
+				t.Fatal("expected error for non-conflict rebase failure under rebase.autostash=true")
+			}
+			if len(ag.calls) != 0 {
+				t.Errorf("expected 0 agent calls for non-conflict failure, got %d", len(ag.calls))
+			}
+			if got := gitCmd(t, dir, "stash", "list"); got != "" {
+				t.Fatalf("expected no autostash entry holding the dirty worktree, got %q", got)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "b.txt"))
+			if err != nil {
+				t.Fatalf("read worktree file: %v", err)
+			}
+			if string(got) != "dirty\n" {
+				t.Fatalf("expected uncommitted change to stay in the worktree, got %q", got)
+			}
+		})
+	}
+}
+
 func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
