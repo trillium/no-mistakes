@@ -2000,14 +2000,19 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
-	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
+	slowConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
+	h.CommitChange("superseded-run", ".no-mistakes.yaml", slowConfig, "configure superseded slow test")
 	h.PushToGate("superseded-run")
 	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("replace superseded test command with fast version: %v", err)
-	}
-	h.CommitChange("superseded-run", "superseded-run.txt", "second push\n", "supersede active run")
+	// Make the superseding run fast by pushing a config that names a fast
+	// command, not by rewriting the slow script in place. The step is marked
+	// running in the database before the daemon execs the command, so
+	// overwriting the file here could hand the *first* run the fast version:
+	// it then passed its test step, completed instead of being cancelled, and
+	// this assertion failed. That window widens exactly when the whole suite
+	// is running and the machine is loaded.
+	fastConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: true\n"
+	h.CommitChange("superseded-run", ".no-mistakes.yaml", fastConfig, "supersede active run")
 	h.PushToGate("superseded-run")
 	cancelled := waitForRunIDStatus(t, h, first.ID, types.RunCancelled, 60*time.Second)
 	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "superseded by new push") {
