@@ -66,4 +66,3 @@ func TestOutcomeForRun_NonFailedStatusesAreUnchangedByCustody(t *testing.T) {
 		}
 	}
 }
-
