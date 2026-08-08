@@ -260,7 +260,7 @@ Safest local verification sequence after non-trivial changes:
 
 - `outcomeForRun` (`internal/cli/axi_drive.go`) refines a failed run to `failed_work_preserved` when `branchsync.WorkPreserved` holds — the terminal-custody state where the pipeline moved the head and then died, leaving well-formed commits in the local gate. A flat `failed` reads as "nothing happened" and invites redoing durable work, which is exactly what `preserveGateFixCommitsGuidance` forbids.
 - `branchsync.WorkPreserved` is the single predicate for that fact; do not re-test the `blocked_pipeline_owned_recoverable` string. Any new outcome word must also be added to `internal/skill/skill.go` (then `make skill`) — the outcome vocabulary is agent-facing contract.
-- Regressions: `TestOutcomeForRun_*`, `TestFailedWorkPreservedHelpNamesTheRecoveryAndForbidsRedoingTheWork`.
+- Regressions: `TestOutcomeForRun_*`.
 
 **When Making Changes**
 
