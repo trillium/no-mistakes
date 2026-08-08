@@ -249,6 +249,19 @@ Safest local verification sequence after non-trivial changes:
 - Empty `text` (nil `StructuredOutput` + no text) returns `errNoStructuredOutput` and is still retried by `runWithRetry` up to `claudeMaxRetries` times, preserving prior behavior for genuine transient omissions.
 - Regressions: `TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput`, `TestClaudeAgent_FinalizeResult_ProseTextYieldsTextNotJSON`, `TestClaudeAgent_FinalizeResult_ADHDPrefixProseYieldsTextNotJSON`, `TestClaudeAgent_FinalizeResult_EmbeddedJSONExtractedWithoutRepair`, `TestClaudeRetryClassifier_TextNotJSONNotRetried`, `TestClaudeRetryClassifier_ProseWrappedNotRetried`, `TestClaudeRetryClassifier_ProseWrappedWithTransientNeedle`, `TestClaudeAgent_ClaudeProseError_MessageNamesCause`.
 
+**Claude Adapter Exit Diagnosis**
+
+- Claude announces its terminal refusals ("You've hit your session limit …") on **stdout** as ordinary assistant text, emits no result event, then exits nonzero with an **empty stderr**. An adapter that formats only stderr therefore reports `claude exited: exit status 1: ` — a bare trailing colon that cannot distinguish an OOM from a rate limit from a clean-but-nonzero exit (robots-618i).
+- `claudeExitDetail` composes the two views every failing claude turn must produce: `detail` (all evidence — stderr, the result event's fields, the tail of what the agent said) goes to the operator; `harness` (stderr plus `subtype`/`is_error` only) is the sole text `classifyTransient` may read. `parseClaudeEvents` publishes the accumulated assistant text through its `text` out-param on **every** exit path, including a stream that ends with no result event.
+- `transientScoped` (`internal/agent/retry.go`) is the partial form of `neverTransient`: keep the whole message for the reader, classify only on `classifyText`. Use it — never blanket `neverTransient` — when an error must quote agent output but still carries harness evidence worth retrying on. Folding agent prose into the classified text lets the model buy its own retries.
+- Regressions: `TestClaudeAgent_RunTurn_SessionLimitStopIsDiagnosable`, `TestClaudeAgent_RunTurn_TransientStderrStaysRetriable`, `TestClaudeAgent_RunTurn_MissingResultEventCarriesWhatWasSaid`, `TestClaudeExitDetail_*`, `TestClassifyTransient_ScopedErrorReadsOnlyHarnessEvidence`.
+
+**Terminal Run Outcomes**
+
+- `outcomeForRun` (`internal/cli/axi_drive.go`) refines a failed run to `failed_work_preserved` when `branchsync.WorkPreserved` holds — the terminal-custody state where the pipeline moved the head and then died, leaving well-formed commits in the local gate. A flat `failed` reads as "nothing happened" and invites redoing durable work, which is exactly what `preserveGateFixCommitsGuidance` forbids.
+- `branchsync.WorkPreserved` is the single predicate for that fact; do not re-test the `blocked_pipeline_owned_recoverable` string. Any new outcome word must also be added to `internal/skill/skill.go` (then `make skill`) — the outcome vocabulary is agent-facing contract.
+- Regressions: `TestOutcomeForRun_*`.
+
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.

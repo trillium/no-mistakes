@@ -103,7 +103,7 @@ func boundedTUISyncValue(value string) string {
 // recoverableBranchSync reports whether the state is the stranded terminal
 // pipeline_owned custody state that the guarded recovery action can end.
 func recoverableBranchSync(state *branchsync.State) bool {
-	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
+	return branchsync.WorkPreserved(state)
 }
 
 func renderRecoverConfirmation(state branchsync.State, width int) string {

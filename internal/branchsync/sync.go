@@ -58,6 +58,10 @@ const (
 const (
 	SafetySafeFastForward       = "safe_fast_forward"
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+	// SafetyPipelineOwnedRecoverable is the one safety value that means work
+	// SURVIVED a terminal run: the pipeline moved the head, then ended without
+	// publishing it, so the commits sit preserved in the local gate.
+	SafetyPipelineOwnedRecoverable = "blocked_pipeline_owned_recoverable"
 )
 
 // State is the shared branch synchronization contract rendered by CLI, AXI,
@@ -123,6 +127,17 @@ type NextAction struct {
 // equivalent-diverged advance that first anchors the pre-sync head.
 func CanApply(state State) bool {
 	return state.Safety == SafetySafeFastForward || state.Safety == SafetySafeEquivalentAdvance
+}
+
+// WorkPreserved reports the stranded terminal custody state: a run that ended
+// AFTER moving the branch head, leaving well-formed pipeline commits in the
+// local gate that the guarded recovery action can return. It is the fact that
+// distinguishes "the step died with its work committed" from "the step failed
+// and produced nothing" - presenters must not report the former as a flat
+// failure, because a reader who believes nothing landed re-does work that is
+// already durable (robots-618i).
+func WorkPreserved(state *State) bool {
+	return state != nil && state.State == StatePipelineOwned && state.Safety == SafetyPipelineOwnedRecoverable
 }
 
 // Service synchronizes only the invoking worktree. Repo is the registered
@@ -1336,7 +1351,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		state.Safety = "blocked_pipeline_owned_recoverable"
+		state.Safety = SafetyPipelineOwnedRecoverable
 		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
 		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
 		return
