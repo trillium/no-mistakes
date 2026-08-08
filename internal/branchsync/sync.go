@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -713,7 +714,7 @@ func (s *Service) anchorPreservedFromGate(ctx context.Context, wd, gateDir, bran
 	_, fetchErr := git.Run(ctx, wd, "fetch", "--no-tags", "--no-write-fetch-head", gateDir, "+"+stagingRef+":"+anchorRef)
 	cleanupErr := removeGateStagingRef(ctx, gateDir, stagingRef)
 	if fetchErr != nil {
-		return fetchErr
+		return errors.Join(fetchErr, cleanupErr)
 	}
 	return cleanupErr
 }

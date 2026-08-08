@@ -58,9 +58,6 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 // write happen without a check-then-act gap between them.
 func RunWithInput(ctx context.Context, dir, stdin string, args ...string) (string, error) {
 	if isBareGitDir(dir) {
-		if dir == "" {
-			return "", fmt.Errorf("bare git directory is empty")
-		}
 		return runInDirWithInput(ctx, dir, stdin, append([]string{"--git-dir=" + dir}, args...)...)
 	}
 	return runInDirWithInput(ctx, dir, stdin, args...)
