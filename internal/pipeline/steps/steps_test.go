@@ -38,7 +38,7 @@ func handleFakeCLI(mode string) {
 		}
 	}
 	logFakeCLIStdinBody(args, logFile)
-	fakeCLIAuthProbe(args)
+	fakeCLIAuthProbe(mode, args)
 
 	switch mode {
 	case "gh":
@@ -115,20 +115,41 @@ func fakeRecordSuccessHandler() {
 // fakeCLIAuthProbe answers the provider credential probes for every fake CLI
 // mode, so individual handlers keep only their own `auth status` success path.
 //
-//   - `auth token` reads the credential store offline. FAKE_CLI_AUTH=none means
-//     no credential is on file (genuinely unauthenticated); otherwise one is.
+//   - The offline credential read - `gh auth token` for GitHub,
+//     `glab config get token` for GitLab - reports what is on file without a
+//     network call. FAKE_CLI_AUTH=none means no credential is on file
+//     (genuinely unauthenticated); otherwise one is.
 //   - FAKE_CLI_AUTH_BLIP makes the network-validating `auth status` fail while
 //     the credential stays on file. That is the robots-taam false negative:
-//     gh calls a good token invalid when it cannot reach the API.
+//     the CLI calls a good token invalid when it cannot reach the API.
 //
 // Unset, both are no-ops and the mode handler answers `auth status` itself.
-func fakeCLIAuthProbe(args []string) {
+// The two providers use different subcommands and print different text, so the
+// probe keys off mode rather than answering every CLI with gh's wording.
+func fakeCLIAuthProbe(mode string, args []string) {
+	gitlab := strings.Contains(mode, "glab")
+	noCredential := os.Getenv("FAKE_CLI_AUTH") == "none"
+
+	// GitLab's offline read is `glab config get token [--host <host>]`;
+	// `glab auth token` does not exist.
+	if gitlab && len(args) >= 3 && args[0] == "config" && args[1] == "get" && args[2] == "token" {
+		if noCredential {
+			os.Exit(1)
+		}
+		fmt.Println("glpat-faketoken")
+		os.Exit(0)
+	}
+
 	if len(args) < 2 || args[0] != "auth" {
 		return
 	}
-	noCredential := os.Getenv("FAKE_CLI_AUTH") == "none"
 	switch args[1] {
 	case "token":
+		if gitlab {
+			// Match the real glab, which has no `auth token` subcommand.
+			fmt.Fprintln(os.Stderr, `unknown command "token" for "glab auth"`)
+			os.Exit(1)
+		}
 		if noCredential {
 			fmt.Fprintln(os.Stderr, "no oauth token found for github.com")
 			os.Exit(1)
@@ -137,12 +158,20 @@ func fakeCLIAuthProbe(args []string) {
 		os.Exit(0)
 	case "status":
 		if noCredential {
-			fmt.Fprintln(os.Stderr, "You are not logged into any GitHub hosts. To log in, run: gh auth login")
+			if gitlab {
+				fmt.Fprintln(os.Stderr, "No token provided. Run `glab auth login` to authenticate.")
+			} else {
+				fmt.Fprintln(os.Stderr, "You are not logged into any GitHub hosts. To log in, run: gh auth login")
+			}
 			os.Exit(1)
 		}
 		if os.Getenv("FAKE_CLI_AUTH_BLIP") != "" {
-			fmt.Fprintln(os.Stderr, "X Failed to log in to github.com account tester (keyring)")
-			fmt.Fprintln(os.Stderr, "- The token in keyring is invalid.")
+			if gitlab {
+				fmt.Fprintln(os.Stderr, "x gitlab.com: api call failed: Get \"https://gitlab.com/api/v4/user\": dial tcp: lookup gitlab.com: no such host")
+			} else {
+				fmt.Fprintln(os.Stderr, "X Failed to log in to github.com account tester (keyring)")
+				fmt.Fprintln(os.Stderr, "- The token in keyring is invalid.")
+			}
 			os.Exit(1)
 		}
 	}

@@ -195,9 +195,11 @@ Creates or updates a pull request.
 - A legacy or manually edited GitLab, Bitbucket, or Azure DevOps repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
 
 **Fails (never skips) when:**
-- The provider CLI is installed but has no credential on file for this repository's host. The step reports the CLI's own explanation, so the fix is visible instead of the run reporting success with no pull request.
+- The provider CLI is installed but its availability check finds no usable credential for this repository's host. The step reports the CLI's own explanation, so the fix is visible instead of the run reporting success with no pull request.
 
-An unreachable provider is not treated as unauthenticated. `gh auth status` validates the stored token against the GitHub API, so it exits non-zero during a network outage and calls a working credential invalid; the step confirms a credential is on file before deciding, and otherwise proceeds so the real PR call surfaces the true provider error.
+For GitHub and GitLab, an unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid. Before failing, the step confirms a credential is on file using an offline read that makes no network call - `gh auth token` for GitHub, `glab config get token` for GitLab - and proceeds when one is found, so the real PR call surfaces the true provider error.
+
+Azure DevOps has no offline equivalent. `az` availability is an online organization-scoped read (`az devops project list`), so an outage or an unreachable organization cannot be distinguished from a missing PAT and is reported as an authentication failure.
 
 **Behavior:**
 - Checks for an existing PR on the branch
@@ -227,9 +229,11 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
 
 **Fails (never skips) when:**
-- The provider CLI is installed but has no credential on file for this repository's host. The step reports the CLI's own explanation so the fix is visible instead of the run reporting success with no CI verification.
+- The provider CLI is installed but its availability check finds no usable credential for this repository's host. The step reports the CLI's own explanation so the fix is visible instead of the run reporting success with no CI verification.
 
-An unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid; the step confirms a credential is on file before deciding, and otherwise proceeds so the real CI check call surfaces the true provider error.
+For GitHub and GitLab, an unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid. Before failing, the step confirms a credential is on file using an offline read that makes no network call - `gh auth token` for GitHub, `glab config get token` for GitLab - and proceeds when one is found, so the real CI check call surfaces the true provider error.
+
+Azure DevOps has no offline equivalent. `az` availability is an online organization-scoped read (`az devops project list`), so an outage or an unreachable organization cannot be distinguished from a missing PAT and is reported as an authentication failure.
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
