@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -140,9 +141,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
+	// Mirrors the PR step: only a missing CLI may skip. Skipping CI on any
+	// other availability failure silently drops the run's only remote
+	// verification, which is exactly the guarantee this pipeline exists for.
 	if err := host.Available(ctx); err != nil {
-		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		if errors.Is(err, scm.ErrCLINotInstalled) {
+			sctx.Log(fmt.Sprintf("skipping CI: %v", err))
+			return &pipeline.StepOutcome{Skipped: true}, nil
+		}
+		return nil, fmt.Errorf("cannot verify CI: %w", err)
 	}
 
 	// Get PR URL from run record

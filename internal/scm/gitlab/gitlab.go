@@ -120,7 +120,7 @@ func (h *Host) Capabilities() scm.Capabilities {
 
 func (h *Host) Available(ctx context.Context) error {
 	if h.cliAvailable != nil && !h.cliAvailable() {
-		return errors.New("glab CLI is not installed")
+		return fmt.Errorf("%w: glab", scm.ErrCLINotInstalled)
 	}
 	// Scope the auth check to this repo's host. Unscoped `glab auth status`
 	// checks every configured instance and exits non-zero if ANY of them has a
@@ -132,10 +132,40 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "glab", authArgs...).Run(); err != nil {
-		return errors.New("glab CLI is not authenticated")
+	out, err := h.cmd(ctx, "glab", authArgs...).CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return nil
+	// `glab auth status` validates the token against the GitLab API, so a
+	// network outage, an unreachable instance, or a proxy error exits non-zero
+	// for a perfectly good credential. `glab config get token` reads the
+	// credential store offline (env vars, local repo config, ~/.config/glab-cli/
+	// config.yml) and makes no network call: a non-empty token means the
+	// operator IS authenticated and the validation failure was transient;
+	// proceed and let the real glab call surface any genuine provider error.
+	if h.credentialStored(ctx) {
+		return nil
+	}
+	return fmt.Errorf("glab CLI is not authenticated for %s: %s", h.authHostLabel(), scm.AuthFailureDetail(out, err))
+}
+
+// credentialStored reports whether glab holds a token for this repo's host.
+// It reads the credential store only (env vars, local repo config, ~/.config/
+// glab-cli/config.yml) and makes no network call.
+func (h *Host) credentialStored(ctx context.Context) bool {
+	args := []string{"config", "get", "token"}
+	if h.host != "" {
+		args = append(args, "--host", h.host)
+	}
+	out, err := h.cmd(ctx, "glab", args...).Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+func (h *Host) authHostLabel() string {
+	if h.host != "" {
+		return h.host
+	}
+	return "any configured host"
 }
 
 type mrPayload struct {

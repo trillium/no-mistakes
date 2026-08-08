@@ -231,6 +231,25 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	return env, logFile
 }
 
+// fakeGHWithAuth is fakeGH with the credential-probe overrides read by
+// fakeCLIAuthProbe (FAKE_CLI_AUTH / FAKE_CLI_AUTH_BLIP).
+func fakeGHWithAuth(t *testing.T, prViewURL string, auth map[string]string) (env []string, logFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+	vars := map[string]string{
+		"FAKE_CLI_MODE":   "gh",
+		"FAKE_CLI_LOG":    logFile,
+		"FAKE_CLI_PR_URL": prViewURL,
+	}
+	for k, v := range auth {
+		vars[k] = v
+	}
+	env = fakeCLIEnv(binDir, vars)
+	return env, logFile
+}
+
 type fakeBitbucketPRAPI struct {
 	server         *httptest.Server
 	listCalls      int

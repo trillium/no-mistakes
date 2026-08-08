@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -690,6 +691,91 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil", err)
+	}
+}
+
+func TestAvailableTreatsValidationFailureWithStoredCredentialAsAvailable(t *testing.T) {
+	t.Parallel()
+
+	// `gh auth status` reaches the GitHub API to validate the token, so a
+	// network outage prints "The token in keyring is invalid" and exits 1 for a
+	// perfectly good credential. Reporting that as "not authenticated" made the
+	// PR step silently skip for an authenticated operator (robots-taam). A
+	// credential IS on file, so the host must stay available and let the real
+	// gh call surface any genuine provider error.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com": {
+			stdout: "github.com\n  X Failed to log in to github.com account trillium (keyring)\n  - The token in keyring is invalid.\n",
+			code:   1,
+		},
+		"gh auth token --hostname github.com": {stdout: "gho_exampletoken\n"},
+	}), func() bool { return true }, "github.com", "owner/repo")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (stored credential must not be a false negative)", err)
+	}
+}
+
+func TestAvailableReportsGhOutputWhenNoCredentialIsStored(t *testing.T) {
+	t.Parallel()
+
+	// With no credential on file the host really is unauthenticated. The error
+	// must carry gh's own explanation; the old code discarded it and asserted a
+	// bare "gh CLI is not authenticated", which told the operator nothing.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com": {
+			stderr: "You are not logged into any GitHub hosts. To log in, run: gh auth login\n",
+			code:   1,
+		},
+		"gh auth token --hostname github.com": {stderr: "no oauth token\n", code: 1},
+	}), func() bool { return true }, "github.com", "owner/repo")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want unauthenticated error")
+	}
+	if errors.Is(err, scm.ErrCLINotInstalled) {
+		t.Fatalf("Available() error = %v, must not be ErrCLINotInstalled (gh is installed)", err)
+	}
+	if !strings.Contains(err.Error(), "github.com") {
+		t.Fatalf("Available() error = %v, want the host named", err)
+	}
+	if !strings.Contains(err.Error(), "gh auth login") {
+		t.Fatalf("Available() error = %v, want gh's own explanation echoed", err)
+	}
+}
+
+func TestAvailableMarksAMissingCLIAsNotInstalled(t *testing.T) {
+	t.Parallel()
+
+	// A missing binary is the one availability failure a step may skip on, so
+	// it must be distinguishable with errors.Is.
+	host := New(githubTestCmdFactory(nil), func() bool { return false }, "github.com", "owner/repo")
+
+	err := host.Available(context.Background())
+	if !errors.Is(err, scm.ErrCLINotInstalled) {
+		t.Fatalf("Available() error = %v, want ErrCLINotInstalled", err)
+	}
+}
+
+func TestAvailableBoundsTheEchoedGhOutput(t *testing.T) {
+	t.Parallel()
+
+	// gh's output is untrusted third-party text on a user-facing error path.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com": {stderr: strings.Repeat("x", 4096), code: 1},
+		"gh auth token --hostname github.com":  {code: 1},
+	}), func() bool { return true }, "github.com", "owner/repo")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want unauthenticated error")
+	}
+	if !strings.Contains(err.Error(), "(truncated)") {
+		t.Fatalf("Available() error = %v, want a truncation marker", err)
+	}
+	if len(err.Error()) > scm.AuthFailureDetailMaxBytes+256 {
+		t.Fatalf("Available() error length = %d, want bounded", len(err.Error()))
 	}
 }
 

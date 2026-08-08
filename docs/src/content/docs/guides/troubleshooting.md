@@ -223,13 +223,36 @@ Symptom: pipeline completes but the PR step shows `skipped`.
 Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requirements. Most common causes:
 
 - `gh` or `glab` not installed
-- `gh auth status` shows not authenticated
 - Bitbucket env vars not set in the daemon's environment
 - Upstream is on a host that isn't supported (GitHub, GitLab, `bitbucket.org`, or Azure DevOps)
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the default branch (PR step always skips on the default branch)
+
+An unauthenticated provider CLI no longer skips - the PR and CI steps **fail** and report the CLI's own message, because a run that reports success with no pull request hides the problem.
+
+## PR step fails with "gh CLI is not authenticated"
+
+Symptom: the PR or CI step fails naming a host you believe you are logged into.
+
+The error carries `gh`'s own explanation; read it before re-running `gh auth login`.
+The step reaches this only when `gh auth token --hostname <host>` finds no credential for that host, so the usual causes are a login scoped to a different hostname (a GitHub Enterprise instance) or a daemon running as a different user with its own `gh` config.
+Run `gh auth status --hostname <host>` and `gh auth token --hostname <host>` as the user that owns the daemon.
+
+A network outage does not produce this failure: `gh auth status` also validates the token against the GitHub API and reports "the token in keyring is invalid" when it cannot reach it, so the step confirms the credential exists before concluding anything.
+
+## PR or CI step fails with "az azure-devops extension is not installed"
+
+Symptom: the PR or CI step fails with a message about the `azure-devops` extension not being installed, even though `az` is present.
+
+This used to be a silent skip. It is now a hard failure because the repository is an Azure DevOps repository and the step must not silently succeed with no pull request or CI verification.
+
+Fix: install the extension as the user that owns the daemon.
+
+```sh
+az extension add --name azure-devops
+```
 
 ## CI step stuck or timed out
 

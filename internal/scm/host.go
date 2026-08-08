@@ -170,6 +170,16 @@ type Capabilities struct {
 // relying on this error, but implementations return it as a fallback.
 var ErrUnsupported = errors.New("operation not supported by this provider")
 
+// ErrCLINotInstalled wraps the Available() failure that means the provider's
+// CLI binary is absent from PATH. It is the ONLY availability failure a
+// pipeline step may treat as a legitimate skip: the operator never installed
+// the tool, so there is nothing to surface. Every other failure means the
+// provider IS configured for this repository and something went wrong, which
+// must fail the step instead of silently dropping PR creation or CI
+// verification. Implementations must wrap it (`fmt.Errorf("%w: gh", ...)`)
+// rather than return a bare "not installed" string.
+var ErrCLINotInstalled = errors.New("provider CLI is not installed")
+
 // Host is the provider-agnostic interface to a PR-hosting service.
 // Transport (CLI vs HTTP API) is an implementation detail.
 type Host interface {

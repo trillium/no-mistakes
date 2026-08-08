@@ -190,11 +190,17 @@ Creates or updates a pull request.
 **Skipped when:**
 - The branch is the default branch
 - The upstream host is not GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), or Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)
-- The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
-- The provider CLI is not authenticated for GitHub or GitLab
+- The provider CLI (`gh`, `glab`, or `az`) is not installed
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
-- The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited GitLab, Bitbucket, or Azure DevOps repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
+
+**Fails (never skips) when:**
+- The provider CLI is installed but its availability check finds no usable credential for this repository's host. The step reports the CLI's own explanation, so the fix is visible instead of the run reporting success with no pull request.
+- `az` is installed but the `azure-devops` extension is not. The step fails with a message that includes the remedy (`az extension add --name azure-devops`) rather than silently skipping the PR.
+
+For GitHub and GitLab, an unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid. Before failing, the step confirms a credential is on file using an offline read that makes no network call - `gh auth token` for GitHub, `glab config get token` for GitLab - and proceeds when one is found, so the real PR call surfaces the true provider error.
+
+Azure DevOps has no offline equivalent. `az` availability is an online organization-scoped read (`az devops project list`), so an outage or an unreachable organization cannot be distinguished from a missing PAT and is reported as an authentication failure.
 
 **Behavior:**
 - Checks for an existing PR on the branch
@@ -219,10 +225,17 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Active for GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)**.
 
-- GitHub requires `gh` CLI, installed and authenticated.
-- GitLab requires `glab` CLI, installed and authenticated.
-- Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
-- Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.
+**Skipped when:**
+- The provider CLI (`gh`, `glab`, or `az`) is not installed
+- Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
+
+**Fails (never skips) when:**
+- The provider CLI is installed but its availability check finds no usable credential for this repository's host. The step reports the CLI's own explanation so the fix is visible instead of the run reporting success with no CI verification.
+- `az` is installed but the `azure-devops` extension is not. The step fails with a message that includes the remedy (`az extension add --name azure-devops`) rather than silently skipping CI monitoring.
+
+For GitHub and GitLab, an unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid. Before failing, the step confirms a credential is on file using an offline read that makes no network call - `gh auth token` for GitHub, `glab config get token` for GitLab - and proceeds when one is found, so the real CI check call surfaces the true provider error.
+
+Azure DevOps has no offline equivalent. `az` availability is an online organization-scoped read (`az devops project list`), so an outage or an unreachable organization cannot be distinguished from a missing PAT and is reported as an authentication failure.
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that

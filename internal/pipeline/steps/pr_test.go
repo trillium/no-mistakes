@@ -1756,6 +1756,73 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	}
 }
 
+func TestPRStep_TransientAuthValidationFailureStillCreatesPR(t *testing.T) {
+	t.Parallel()
+	// robots-taam: `gh auth status` validates the token against the GitHub API,
+	// so a network blip makes it exit non-zero and call a good credential
+	// invalid. The step used to log "skipping PR creation: gh CLI is not
+	// authenticated" and report success having opened nothing. A credential is
+	// on file, so the PR must still be created.
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithAuth(t, "", map[string]string{"FAKE_CLI_AUTH_BLIP": "1"})
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+	if outcome.Skipped {
+		t.Fatal("PR step skipped on a transient auth-validation failure; a stored credential must not be a false negative")
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "pr create") {
+		t.Fatalf("expected gh pr create to be called, got:\n%s", logData)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL == "" {
+		t.Fatal("expected the PR URL to be persisted")
+	}
+}
+
+func TestPRStep_UnauthenticatedProviderFailsInsteadOfSkipping(t *testing.T) {
+	t.Parallel()
+	// gh is installed and the repo is on GitHub, so an unauthenticated CLI is a
+	// misconfiguration the operator must see - not a reason to report success
+	// with no pull request.
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGHWithAuth(t, "", map[string]string{"FAKE_CLI_AUTH": "none"})
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatalf("Execute() error = nil (outcome %+v), want a failure instead of a silent skip", outcome)
+	}
+	if !strings.Contains(err.Error(), "gh auth login") {
+		t.Fatalf("Execute() error = %v, want gh's own explanation echoed", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL != nil {
+		t.Fatalf("expected no PR URL, got %q", *run.PRURL)
+	}
+}
+
 func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
