@@ -324,6 +324,24 @@ func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) boo
 	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
+// runRebase starts a rebase onto targetRef. It is the single owner of the
+// pipeline's rebase invocation, so the operation cannot change meaning with the
+// operator's git configuration.
+//
+// rebase.autostash is the setting that matters: with it enabled (commonly set
+// globally in a personal ~/.gitconfig) git silently stashes a dirty worktree,
+// rebases, and reapplies it. A rebase this step must refuse then reports
+// success, the uncommitted work survives only in a stash the pipeline never
+// mentions, and a reapply conflict leaves the worktree mid-merge with a stash
+// entry the next step knows nothing about. This tool refuses and surfaces a
+// finding rather than performing a recovery it cannot account for, so the
+// pipeline always rebases committed state only and a dirty worktree is an
+// error on every host.
+func runRebase(ctx context.Context, workDir, targetRef string) error {
+	_, err := git.Run(ctx, workDir, "-c", "rebase.autostash=false", "rebase", targetRef)
+	return err
+}
+
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
 // rebase stops on merge conflicts. The rebase is aborted before returning.
 func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) ([]string, error) {
@@ -336,7 +354,7 @@ func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string
 	}
 
 	sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
-	if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err != nil {
+	if err := runRebase(ctx, sctx.WorkDir, targetRef); err != nil {
 		conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
 
@@ -359,7 +377,7 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 	}
 
 	sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
-	if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err == nil {
+	if err := runRebase(ctx, sctx.WorkDir, targetRef); err == nil {
 		return nil
 	}
 
