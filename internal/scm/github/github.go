@@ -217,7 +217,6 @@ func (h *Host) authHostLabel() string {
 	return "any configured host"
 }
 
-
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
 	args := []string{"pr", "list", "--head", branch}
 	if strings.TrimSpace(base) != "" {

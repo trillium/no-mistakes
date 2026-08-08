@@ -662,7 +662,7 @@ func TestGitlabAvailableBoundsTheEchoedGlabOutput(t *testing.T) {
 
 	// glab's output is untrusted third-party text on a user-facing error path.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab auth status --hostname gitlab.com": {stderr: strings.Repeat("x", 4096), code: 1},
+		"glab auth status --hostname gitlab.com":  {stderr: strings.Repeat("x", 4096), code: 1},
 		"glab config get token --host gitlab.com": {code: 1},
 	}), func() bool { return true }, "gitlab.com", "")
 

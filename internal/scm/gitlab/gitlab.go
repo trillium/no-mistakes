@@ -168,7 +168,6 @@ func (h *Host) authHostLabel() string {
 	return "any configured host"
 }
 
-
 type mrPayload struct {
 	IID                 int    `json:"iid"`
 	WebURL              string `json:"web_url"`
