@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -177,7 +178,8 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	var streamText string
+	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result, &streamText); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, usage, pid, fmt.Errorf("claude parse events: %w", err)
@@ -186,13 +188,102 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		return nil, usage, pid, fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		detail, harness := claudeExitDetail(string(stderrBuf), result, streamText)
+		return nil, usage, pid, transientScoped(
+			fmt.Errorf("claude exited: %w: %s", waitErr, detail),
+			claudeClassifyText(waitErr, harness),
+		)
 	}
 
 	if result == nil {
-		return nil, usage, pid, fmt.Errorf("claude returned no result event")
+		detail, harness := claudeExitDetail(string(stderrBuf), nil, streamText)
+		return nil, usage, pid, transientScoped(
+			fmt.Errorf("claude returned no result event: %s", detail),
+			harness,
+		)
 	}
 	return result, usage, pid, nil
+}
+
+// claudeExitDetailMaxBytes bounds the agent-authored text folded into an error.
+// A single turn's stream can run to megabytes, and the whole point of the error
+// is that it lands in `runs.error` and a step log.
+const claudeExitDetailMaxBytes = 2000
+
+// claudeExitDetail composes the two views of a claude turn that ended badly.
+//
+// detail is what the operator reads: every piece of evidence the process left
+// behind - the harness's stderr, the result event's own fields, and the tail of
+// what the agent actually said.
+//
+// harness is the subset classifyTransient may read: stderr and the result
+// event's subtype/is_error. The agent's own words are deliberately excluded, so
+// a model that types "connection refused" cannot buy itself another attempt
+// (transientScoped in retry.go owns that rule).
+//
+// The split exists because claude announces its terminal refusals on STDOUT, not
+// stderr. A session-limit stop arrives as an ordinary assistant text event and
+// the process then exits 1 with an EMPTY stderr, which the adapter used to
+// render as a bare "claude exited: exit status 1: " - nothing after the colon,
+// no way to tell an OOM from a rate limit from a clean-but-nonzero exit, and no
+// needle for the retry loop to classify on (robots-618i). Reporting that as a
+// flat failure invites re-doing work the step had already committed.
+func claudeExitDetail(stderr string, result *claudeResult, text string) (detail, harness string) {
+	var harnessParts []string
+	if s := strings.TrimSpace(stderr); s != "" {
+		harnessParts = append(harnessParts, s)
+	}
+	if result != nil {
+		if result.Subtype != "" {
+			harnessParts = append(harnessParts, "subtype="+result.Subtype)
+		}
+		if result.IsError {
+			harnessParts = append(harnessParts, "is_error=true")
+		}
+	}
+
+	detailParts := append([]string(nil), harnessParts...)
+	agentText := strings.TrimSpace(text)
+	if result != nil {
+		// The result event's closing message is usually the last assistant
+		// message repeated; only add it when it is genuinely new information.
+		if final := strings.TrimSpace(result.finalText); final != "" && !strings.Contains(agentText, final) {
+			agentText = strings.TrimSpace(agentText + "\n" + final)
+		}
+	}
+	if agentText != "" {
+		detailParts = append(detailParts, "agent output (tail): "+claudeDetailTail(agentText))
+	}
+
+	detail = strings.Join(detailParts, "; ")
+	if detail == "" {
+		detail = "no stderr, no result event, and no agent output"
+	}
+	return detail, strings.Join(harnessParts, "; ")
+}
+
+// claudeClassifyText is the harness-only text a nonzero exit may be classified
+// on: the wait error itself plus whatever harness evidence came with it.
+func claudeClassifyText(waitErr error, harness string) string {
+	if harness == "" {
+		return waitErr.Error()
+	}
+	return waitErr.Error() + "; " + harness
+}
+
+// claudeDetailTail keeps the LAST claudeExitDetailMaxBytes of s. The tail is the
+// informative end: the harness states why it stopped after the work, not before.
+func claudeDetailTail(s string) string {
+	if len(s) <= claudeExitDetailMaxBytes {
+		return s
+	}
+	tail := s[len(s)-claudeExitDetailMaxBytes:]
+	// Advance to the next rune boundary so a truncated multi-byte rune never
+	// reaches a log as a replacement character.
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return "..." + tail
 }
 
 func (a *claudeAgent) Close() error { return nil }
@@ -235,7 +326,10 @@ func claudeProseError(err error) error {
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
-		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
+		// A bare subtype names the category and nothing else; the result event's
+		// own closing message is the only place the reason is written down.
+		detail, harness := claudeExitDetail("", result, result.text)
+		return nil, transientScoped(fmt.Errorf("claude error: %s", detail), harness)
 	}
 	if len(schema) == 0 {
 		return &Result{
@@ -396,6 +490,11 @@ type claudeEvent struct {
 	IsError          bool            `json:"is_error,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 	Usage            *claudeUsage    `json:"usage,omitempty"`
+	// Result is the result event's own closing message. On an error subtype it
+	// is the harness's account of why the turn ended; on success it is the
+	// model's final text. Because it is sometimes the model's words it is
+	// treated as agent output throughout (see claudeExitDetail).
+	Result string `json:"result,omitempty"`
 }
 
 // claudeResult captures the parsed result event.
@@ -404,6 +503,7 @@ type claudeResult struct {
 	IsError          bool
 	StructuredOutput json.RawMessage
 	text             string // accumulated text from assistant events
+	finalText        string // the result event's own closing message
 	rawEvent         json.RawMessage
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
@@ -429,12 +529,22 @@ type claudeContent struct {
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
 // It accumulates token usage and captures the final result event.
-func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
+//
+// text, when non-nil, receives the accumulated assistant text unconditionally -
+// including when the stream ends with NO result event. That is the only case
+// where claude's account of why it stopped exists nowhere else, so it must not
+// ride on *result the way the rest of the stream does.
+func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult, text *string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
 	var textBuf string
 	var lastSessionID string
 	var lastModel string
+	if text != nil {
+		// Publish on every exit path, including ctx cancellation and a scanner
+		// error, so a partial stream still explains itself.
+		defer func() { *text = textBuf }()
+	}
 
 	for scanner.Scan() {
 		select {
@@ -491,6 +601,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 					IsError:          event.IsError,
 					StructuredOutput: event.StructuredOutput,
 					text:             textBuf,
+					finalText:        event.Result,
 					rawEvent:         raw,
 					sessionID:        lastSessionID,
 					model:            lastModel,
