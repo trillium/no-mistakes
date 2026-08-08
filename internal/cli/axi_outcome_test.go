@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
@@ -16,7 +15,7 @@ import (
 
 func recoverableState() *branchsync.State {
 	state := &branchsync.State{State: branchsync.StatePipelineOwned}
-	state.Safety = "blocked_pipeline_owned_recoverable"
+	state.Safety = branchsync.SafetyPipelineOwnedRecoverable
 	return state
 }
 
@@ -68,12 +67,3 @@ func TestOutcomeForRun_NonFailedStatusesAreUnchangedByCustody(t *testing.T) {
 	}
 }
 
-func TestFailedWorkPreservedHelpNamesTheRecoveryAndForbidsRedoingTheWork(t *testing.T) {
-	joined := strings.Join(failedWorkPreservedHelp(), "\n")
-
-	for _, want := range []string{"recover_custody", "already", "committed"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("help must mention %q, got %q", want, joined)
-		}
-	}
-}

@@ -94,7 +94,8 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 			fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 		}
 		if outcome == outcomeFailedWorkPreserved {
-			fields = append(fields, toon.Field{Key: "help", Value: failedWorkPreservedHelp()})
+			help := append(failedWorkPreservedHelp(), preserveGateFixCommitsGuidance)
+			fields = append(fields, toon.Field{Key: "help", Value: help})
 		}
 	}
 	emitDoc(cmd, fields...)
