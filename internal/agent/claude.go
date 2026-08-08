@@ -202,6 +202,7 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 			harness,
 		)
 	}
+	result.stderr = string(stderrBuf)
 	return result, usage, pid, nil
 }
 
@@ -326,9 +327,10 @@ func claudeProseError(err error) error {
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
-		// A bare subtype names the category and nothing else; the result event's
-		// own closing message is the only place the reason is written down.
-		detail, harness := claudeExitDetail("", result, result.text)
+		// A bare subtype names the category and nothing else. The reason is in
+		// the result event's own closing message, and - when claude reported the
+		// failure here and still exited 0 - in the stderr carried on the result.
+		detail, harness := claudeExitDetail(result.stderr, result, result.text)
 		return nil, transientScoped(fmt.Errorf("claude error: %s", detail), harness)
 	}
 	if len(schema) == 0 {
@@ -504,9 +506,14 @@ type claudeResult struct {
 	StructuredOutput json.RawMessage
 	text             string // accumulated text from assistant events
 	finalText        string // the result event's own closing message
-	rawEvent         json.RawMessage
-	sessionID        string // durable session identity from the event stream
-	model            string // model reported by assistant events
+	// stderr is the process's stderr, carried on the result because claude can
+	// report a failure IN the result event and still exit 0. Without it the
+	// only harness-authored evidence in such a turn is lost before
+	// finalizeClaudeResult can diagnose or classify it.
+	stderr    string
+	rawEvent  json.RawMessage
+	sessionID string // durable session identity from the event stream
+	model     string // model reported by assistant events
 }
 
 type claudeUsage struct {

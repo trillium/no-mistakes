@@ -96,8 +96,11 @@ func TestClaudeExitDetail_BoundsTheAgentTextAndKeepsTheTail(t *testing.T) {
 }
 
 func TestClaudeExitDetail_TruncationKeepsValidUTF8(t *testing.T) {
-	// Multi-byte runes straddling the cut must not leave a partial rune.
-	text := strings.Repeat("é", claudeExitDetailMaxBytes)
+	// A THREE-byte rune, deliberately: claudeExitDetailMaxBytes is even, so a
+	// two-byte rune leaves the cut on a boundary and the test would pass with
+	// the rune-boundary loop deleted. 2000 is not divisible by 3, so this one
+	// forces the tail to start mid-rune.
+	text := strings.Repeat("€", claudeExitDetailMaxBytes)
 
 	detail, _ := claudeExitDetail("", nil, text)
 

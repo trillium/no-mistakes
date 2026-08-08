@@ -73,6 +73,37 @@ exit 1
 	}
 }
 
+// Claude can report its failure IN a result event and still exit 0, writing the
+// API error to stderr on the way out. That stderr is the only harness-authored
+// evidence in the turn, so losing it costs both the diagnosis and the retry: a
+// bare `subtype=error_during_execution` classifies as nothing.
+func TestClaudeAgent_FinalizeResult_CleanExitKeepsTransientStderr(t *testing.T) {
+	bin := writeFakeClaudeScript(t, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' 'API Error: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' >&2
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s1","usage":{"input_tokens":1,"output_tokens":1}}'
+exit 0
+`)
+	a := &claudeAgent{bin: bin}
+
+	result, usage, _, err := a.runTurn(context.Background(), "review the diff", RunOpts{CWD: t.TempDir()}, "")
+	if err != nil {
+		t.Fatalf("a result event is not a turn failure: %v", err)
+	}
+
+	_, err = finalizeClaudeResult(result, nil, usage)
+	if err == nil {
+		t.Fatal("expected an error result to fail finalization")
+	}
+	if !strings.Contains(err.Error(), "overloaded_error") {
+		t.Errorf("stderr must survive a clean exit, got %q", err.Error())
+	}
+	label, retry := claudeRetryClassifier(err)
+	if !retry || label != "overloaded_error" {
+		t.Errorf("expected an overloaded_error retry, got (%q, %v)", label, retry)
+	}
+}
+
 // A clean exit that produced no result event is the same blind spot one step
 // earlier: say what the process did emit instead of only that it emitted nothing.
 func TestClaudeAgent_RunTurn_MissingResultEventCarriesWhatWasSaid(t *testing.T) {
