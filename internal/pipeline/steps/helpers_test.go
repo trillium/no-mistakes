@@ -420,6 +420,47 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
+// maxSimulatedCIPolls bounds a CI monitor whose clock cannot advance. It is far
+// above any poll count these tests intend and exists only so a monitor that
+// never reaches a terminal state fails with that sentence instead of spinning
+// until the go test binary panics.
+const maxSimulatedCIPolls = 64
+
+// useSimulatedCIClock detaches step's CI timeout budget from wall-clock time.
+//
+// ci_timeout is a real elapsed-time budget, and these tests set a very short
+// one (seconds) and then make every poll re-exec the test binary as a fake gh,
+// which is expensive. On a loaded host the re-execs alone can spend the whole
+// budget, so a test asserting a terminal state ("PR has been merged", a merge
+// conflict finding) instead observes "CI timeout reached" - the same six-test
+// failure shape reported as robots-1zs8, reproducible only above ~100 load
+// average. Elapsed real time is not what any of these tests are about, so the
+// clock is frozen and the budget becomes unreachable by host slowness. Tests
+// that DO assert on the timeout keep their own advancing clock instead (see
+// TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval).
+//
+// Call this after the step literal is built; it wraps whatever poll behaviour
+// the test installed, and a step with no waiter of its own is asserting that
+// the monitor terminates without polling again.
+func useSimulatedCIClock(t *testing.T, step *CIStep) {
+	t.Helper()
+	frozen := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	step.now = func() time.Time { return frozen }
+
+	testWait := step.waitForNextPoll
+	polls := 0
+	step.waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
+		polls++
+		if polls > maxSimulatedCIPolls {
+			return fmt.Errorf("CI monitor did not reach a terminal state within %d polls", maxSimulatedCIPolls)
+		}
+		if testWait == nil {
+			return fmt.Errorf("unexpected CI poll wait (interval %s): expected a terminal state without another poll", interval)
+		}
+		return testWait(ctx, interval)
+	}
+}
+
 // fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
 func fakeCIGH(t *testing.T, state, checksJSON string) []string {

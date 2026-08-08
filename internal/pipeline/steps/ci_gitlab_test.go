@@ -67,6 +67,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	pinCIMonitorClock(step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -102,6 +103,7 @@ func TestCIStep_GitLabMergedMRExitsEarly(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	useSimulatedCIClock(t, step)
 	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -139,6 +141,7 @@ func TestCIStep_GitLabFailureNeedsApproval(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
 	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	useSimulatedCIClock(t, step)
 	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -174,6 +177,7 @@ func TestCIStep_GitLabMergeConflictDetected(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
 	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	useSimulatedCIClock(t, step)
 	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -255,6 +259,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
@@ -303,6 +308,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 	pinCIMonitorClock(step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {

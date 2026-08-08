@@ -90,6 +90,7 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -130,6 +131,7 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -177,6 +179,7 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 			return ctx.Err()
 		},
 	}
+	useSimulatedCIClock(t, step)
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -423,6 +426,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 			return nil
 		},
 	}
+	useSimulatedCIClock(t, step)
 	_, err := step.Execute(sctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected error: %v", err)
