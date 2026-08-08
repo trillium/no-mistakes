@@ -242,6 +242,18 @@ Run `gh auth status --hostname <host>` and `gh auth token --hostname <host>` as 
 
 A network outage does not produce this failure: `gh auth status` also validates the token against the GitHub API and reports "the token in keyring is invalid" when it cannot reach it, so the step confirms the credential exists before concluding anything.
 
+## PR or CI step fails with "az azure-devops extension is not installed"
+
+Symptom: the PR or CI step fails with a message about the `azure-devops` extension not being installed, even though `az` is present.
+
+This used to be a silent skip. It is now a hard failure because the repository is an Azure DevOps repository and the step must not silently succeed with no pull request or CI verification.
+
+Fix: install the extension as the user that owns the daemon.
+
+```sh
+az extension add --name azure-devops
+```
+
 ## CI step stuck or timed out
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
