@@ -138,6 +138,8 @@ type Service struct {
 	Paths   *paths.Paths
 
 	beforeApply               func()
+	beforeAnchorStage         func()
+	beforeAnchorFetch         func()
 	beforeGateReset           func()
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
@@ -606,15 +608,25 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// pipeline push, a force-push - is the pre-existing fail-closed case and
 	// still refuses, because only the operator can tell a superseded head from
 	// a preserved one.
-	gateHasPreserved := gateHead != preserved && run.SubmittedHeadSHA != nil &&
+	//
+	// The observed submitted head is carried into the anchoring step rather than
+	// re-derived there, because that step re-verifies it inside the same atomic
+	// ref transaction that stages the fetch source: the acceptance decision and
+	// the staging write must not be separated by a check-then-act gap a
+	// concurrent gate move could slip through.
+	gateSubmittedHead := ""
+	if gateHead != preserved && run.SubmittedHeadSHA != nil &&
 		*run.SubmittedHeadSHA != "" && gateHead == *run.SubmittedHeadSHA &&
-		objectExists(ctx, gateDir, preserved)
+		objectExists(ctx, gateDir, preserved) {
+		gateSubmittedHead = gateHead
+	}
+	gateHasPreserved := gateSubmittedHead != ""
 	if gateHead != preserved && !gateHasPreserved && !resumedKeepLocal {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
 	}
 	if !anchored {
-		if fetchErr := s.anchorPreservedFromGate(ctx, wd, gateDir, branch, preserved, anchorRef, run.ID, gateHasPreserved); fetchErr != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
+		if fetchErr := s.anchorPreservedFromGate(ctx, wd, gateDir, branch, preserved, anchorRef, run.ID, gateSubmittedHead); fetchErr != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored from the local gate; no files or refs were changed")
 		}
 		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the gate branch changed while the preserved pipeline commits were being anchored; no files or refs were changed")
@@ -657,26 +669,72 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 }
 
+// gateStagingCleanupTimeout bounds the removal of the temporary gate-side fetch
+// source. The cleanup runs on a context detached from the recovery's own, so it
+// needs a deadline of its own to stay bounded.
+const gateStagingCleanupTimeout = 30 * time.Second
+
 // anchorPreservedFromGate makes the preserved pipeline head reachable in the
-// invoking worktree at anchorRef. The gate branch is the ordinary source. When
-// the gate holds the preserved commit with no ref pointing at it, the fetch
-// has no name to ask for - an unreachable SHA is not fetchable - so an exact
-// gate-side private ref is staged first and removed again afterwards. The
-// staging ref is written with update-ref rather than delivered by a push,
-// which would fire the gate's receive hooks and start a pipeline run. Once the
-// fetch lands, the local anchor keeps the preserved commits reachable no
-// matter what later happens to the gate.
-func (s *Service) anchorPreservedFromGate(ctx context.Context, wd, gateDir, branch, preserved, anchorRef, runID string, fromGateObjects bool) error {
-	if !fromGateObjects {
+// invoking worktree at anchorRef. The gate branch is the ordinary source, used
+// whenever gateSubmittedHead is empty. When the gate holds the preserved commit
+// with no ref pointing at it, the fetch has no name to ask for - an unreachable
+// SHA is not fetchable - so an exact gate-side private ref is staged first and
+// removed again afterwards. The staging ref is written with update-ref rather
+// than delivered by a push, which would fire the gate's receive hooks and start
+// a pipeline run. Once the fetch lands, the local anchor keeps the preserved
+// commits reachable no matter what later happens to the gate.
+//
+// Staging re-verifies the acceptance condition instead of trusting the caller's
+// earlier read: the whole reason the gate's object store may be used as an
+// anchor source is that the gate branch still holds this run's submitted head,
+// so a gate move between that read and the staging write would silently convert
+// a state that must refuse into a fetched-and-anchored custody return. `verify`
+// and the ref write therefore travel in ONE `update-ref --stdin` transaction,
+// which Git applies atomically; a moved gate branch fails the whole batch and
+// leaves no staging ref behind. This is the same never-check-then-act rule the
+// gate-branch CAS in recoverKeepLocal follows.
+func (s *Service) anchorPreservedFromGate(ctx context.Context, wd, gateDir, branch, preserved, anchorRef, runID, gateSubmittedHead string) error {
+	if gateSubmittedHead == "" {
 		return git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef)
 	}
+	if s.beforeAnchorStage != nil {
+		s.beforeAnchorStage()
+	}
 	stagingRef := "refs/no-mistakes/preserved/" + runID
-	if _, err := git.Run(ctx, gateDir, "update-ref", stagingRef, preserved); err != nil {
+	// `update` rather than `create` so a staging ref stranded by an earlier
+	// crash is reused instead of failing every later recovery of this run.
+	txn := fmt.Sprintf("verify refs/heads/%s %s\nupdate %s %s\n", branch, gateSubmittedHead, stagingRef, preserved)
+	if _, err := git.RunWithInput(ctx, gateDir, txn, "update-ref", "--stdin"); err != nil {
 		return err
 	}
+	if s.beforeAnchorFetch != nil {
+		s.beforeAnchorFetch()
+	}
 	_, fetchErr := git.Run(ctx, wd, "fetch", "--no-tags", "--no-write-fetch-head", gateDir, "+"+stagingRef+":"+anchorRef)
-	_, _ = git.Run(ctx, gateDir, "update-ref", "-d", stagingRef)
-	return fetchErr
+	cleanupErr := removeGateStagingRef(ctx, gateDir, stagingRef)
+	if fetchErr != nil {
+		return fetchErr
+	}
+	return cleanupErr
+}
+
+// removeGateStagingRef deletes the temporary fetch source on a context detached
+// from the caller's, because the caller's is exactly the one that may already be
+// cancelled: the staging ref exists only to give the fetch a name, and one left
+// behind by a cancelled recovery pins the preserved objects in the gate for good
+// - it is unreachable litter that no later code path removes, since a retry
+// finds the anchor already present and skips this function entirely. A cleanup
+// failure is therefore reported rather than discarded; the recovery refuses and
+// nothing has been stamped or moved, which is the fail-closed behaviour the rest
+// of this file uses. Deleting an absent ref is a success, so an already-clean
+// gate is not an error.
+func removeGateStagingRef(ctx context.Context, gateDir, stagingRef string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gateStagingCleanupTimeout)
+	defer cancel()
+	if _, err := git.Run(cleanupCtx, gateDir, "update-ref", "-d", stagingRef); err != nil {
+		return fmt.Errorf("remove gate staging ref %s: %w", stagingRef, err)
+	}
+	return nil
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the

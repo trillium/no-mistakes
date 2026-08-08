@@ -212,7 +212,9 @@ Without that positive terminal head evidence, custody stays recoverable rather t
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
-For behind or diverged worktrees, recovery verifies the preserved head in the local gate - at its branch head, or in its object store when the run rebased in a detached worktree without advancing that branch - and fetches it into the anchor before moving or refusing.
+For behind or diverged worktrees, recovery verifies the preserved head in the local gate and fetches it into the anchor before moving or refusing.
+The gate branch head is the ordinary source; the gate's object store is used only for a detached-worktree rebase, and only while the gate branch still equals the run's submitted head, which is re-verified atomically as the fetch source is staged.
+A gate branch that moved anywhere else refuses even though the preserved commits are still in that object store.
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
 This covers a pipeline rebase onto a newer base, including a rebase-only run whose detached worktree never advanced the gate branch.

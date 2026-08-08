@@ -1800,3 +1800,72 @@ func TestRecoverStillRefusesWhenTheGateBranchLeftTheSubmittedHead(t *testing.T) 
 		t.Fatalf("moved-gate refusal moved HEAD to %s", got)
 	}
 }
+
+// gateStagingRefAbsent reports whether the temporary gate-side fetch source for
+// this run is gone. It exists only for the duration of one anchoring fetch, so
+// any observation outside that window must find nothing.
+func gateStagingRefAbsent(t *testing.T, f *recoverFixture) bool {
+	t.Helper()
+	_, err := gitpkg.Run(context.Background(), f.gate, "rev-parse", "--verify", "--quiet",
+		"refs/no-mistakes/preserved/"+f.run.ID)
+	return err != nil
+}
+
+// TestRecoverRefusesWhenTheGateBranchMovesBeforeStaging pins the atomicity of
+// the object-store anchor path. The acceptance decision is "the gate branch
+// still holds this run's submitted head", and the staging write is what acts on
+// it; if those were a check followed by an act, a gate push landing in between
+// would turn a state that must refuse into a completed custody return. The
+// verify and the write share one update-ref transaction, so the moved branch
+// fails the whole batch, no staging ref is left behind, and nothing is stamped.
+func TestRecoverRefusesWhenTheGateBranchMovesBeforeStaging(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+	f.service.beforeAnchorStage = func() {
+		mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.base)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recovery completed against a gate branch that moved after the check: %#v", state)
+	}
+	if state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("safety = %s, want blocked_recover_preserve_failed", state.Safety)
+	}
+	if f.custodyReturned() {
+		t.Fatal("a refused recovery stamped custody")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("a refused recovery moved HEAD to %s", got)
+	}
+	if !gateStagingRefAbsent(t, f) {
+		t.Fatal("the failed staging transaction left a staging ref in the gate")
+	}
+}
+
+// TestRecoverRemovesTheGateStagingRefWhenTheAnchorFetchIsCancelled pins the
+// cleanup path. The staging ref is unreachable litter that pins the preserved
+// objects in the gate for good, and no later code path removes it - a retry
+// finds the anchor already present and never re-enters the staging function. So
+// the removal must not itself be cancellable by the context that was just
+// cancelled out from under the fetch.
+func TestRecoverRemovesTheGateStagingRefWhenTheAnchorFetchIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	f := newDetachedRebaseRecoverFixture(t, types.RunCancelled)
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+	f.service.beforeAnchorFetch = cancel
+
+	state := f.service.Recover(ctx, false)
+	if state.Recovered {
+		t.Fatalf("a cancelled anchoring fetch reported a completed recovery: %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("a cancelled recovery stamped custody")
+	}
+	if !gateStagingRefAbsent(t, f) {
+		t.Fatal("the cancelled anchoring fetch left a staging ref pinning the preserved objects in the gate")
+	}
+}
