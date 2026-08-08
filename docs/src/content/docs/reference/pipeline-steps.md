@@ -190,11 +190,14 @@ Creates or updates a pull request.
 **Skipped when:**
 - The branch is the default branch
 - The upstream host is not GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), or Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)
-- The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
-- The provider CLI is not authenticated for GitHub or GitLab
+- The provider CLI (`gh`, `glab`, or `az`) is not installed
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
-- The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited GitLab, Bitbucket, or Azure DevOps repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
+
+**Fails (never skips) when:**
+- The provider CLI is installed but has no credential on file for this repository's host. The step reports the CLI's own explanation, so the fix is visible instead of the run reporting success with no pull request.
+
+An unreachable provider is not treated as unauthenticated. `gh auth status` validates the stored token against the GitHub API, so it exits non-zero during a network outage and calls a working credential invalid; the step confirms a credential is on file before deciding, and otherwise proceeds so the real PR call surfaces the true provider error.
 
 **Behavior:**
 - Checks for an existing PR on the branch

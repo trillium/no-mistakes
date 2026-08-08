@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -70,9 +71,17 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
+	// Only an absent CLI is a legitimate skip: the operator never installed the
+	// tool. Every other availability failure means this repo IS hosted on a
+	// supported provider and the check itself went wrong, and swallowing that
+	// let a run report success having opened no PR at all. Fail the step so the
+	// reason reaches the operator.
 	if err := host.Available(ctx); err != nil {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		if errors.Is(err, scm.ErrCLINotInstalled) {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+			return &pipeline.StepOutcome{Skipped: true}, nil
+		}
+		return nil, fmt.Errorf("cannot create pull request: %w", err)
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.

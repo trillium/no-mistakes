@@ -120,7 +120,7 @@ func (h *Host) Capabilities() scm.Capabilities {
 
 func (h *Host) Available(ctx context.Context) error {
 	if h.cliAvailable != nil && !h.cliAvailable() {
-		return errors.New("glab CLI is not installed")
+		return fmt.Errorf("%w: glab", scm.ErrCLINotInstalled)
 	}
 	// Scope the auth check to this repo's host. Unscoped `glab auth status`
 	// checks every configured instance and exits non-zero if ANY of them has a
@@ -132,10 +132,36 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "glab", authArgs...).Run(); err != nil {
-		return errors.New("glab CLI is not authenticated")
+	// Echo glab's own explanation instead of asserting "not authenticated":
+	// the check also fails for an unreachable instance or a proxy error, and
+	// discarding the reason leaves an authenticated operator with nothing to
+	// act on. See the GitHub host for the full rationale.
+	out, err := h.cmd(ctx, "glab", authArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("glab CLI is not authenticated for %s: %s", h.authHostLabel(), authFailureDetail(out, err))
 	}
 	return nil
+}
+
+func (h *Host) authHostLabel() string {
+	if h.host != "" {
+		return h.host
+	}
+	return "any configured host"
+}
+
+// maxAuthFailureDetailBytes bounds the provider output echoed into the step log.
+const maxAuthFailureDetailBytes = 512
+
+func authFailureDetail(out []byte, err error) string {
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		return err.Error()
+	}
+	if len(detail) > maxAuthFailureDetailBytes {
+		detail = detail[:maxAuthFailureDetailBytes] + " ... (truncated)"
+	}
+	return strings.Join(strings.Fields(detail), " ")
 }
 
 type mrPayload struct {

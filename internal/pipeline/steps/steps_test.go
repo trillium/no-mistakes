@@ -38,6 +38,7 @@ func handleFakeCLI(mode string) {
 		}
 	}
 	logFakeCLIStdinBody(args, logFile)
+	fakeCLIAuthProbe(args)
 
 	switch mode {
 	case "gh":
@@ -109,6 +110,42 @@ func fakeRecordSuccessHandler() {
 		}
 	}
 	os.Exit(0)
+}
+
+// fakeCLIAuthProbe answers the provider credential probes for every fake CLI
+// mode, so individual handlers keep only their own `auth status` success path.
+//
+//   - `auth token` reads the credential store offline. FAKE_CLI_AUTH=none means
+//     no credential is on file (genuinely unauthenticated); otherwise one is.
+//   - FAKE_CLI_AUTH_BLIP makes the network-validating `auth status` fail while
+//     the credential stays on file. That is the robots-taam false negative:
+//     gh calls a good token invalid when it cannot reach the API.
+//
+// Unset, both are no-ops and the mode handler answers `auth status` itself.
+func fakeCLIAuthProbe(args []string) {
+	if len(args) < 2 || args[0] != "auth" {
+		return
+	}
+	noCredential := os.Getenv("FAKE_CLI_AUTH") == "none"
+	switch args[1] {
+	case "token":
+		if noCredential {
+			fmt.Fprintln(os.Stderr, "no oauth token found for github.com")
+			os.Exit(1)
+		}
+		fmt.Println("gho_faketoken")
+		os.Exit(0)
+	case "status":
+		if noCredential {
+			fmt.Fprintln(os.Stderr, "You are not logged into any GitHub hosts. To log in, run: gh auth login")
+			os.Exit(1)
+		}
+		if os.Getenv("FAKE_CLI_AUTH_BLIP") != "" {
+			fmt.Fprintln(os.Stderr, "X Failed to log in to github.com account tester (keyring)")
+			fmt.Fprintln(os.Stderr, "- The token in keyring is invalid.")
+			os.Exit(1)
+		}
+	}
 }
 
 func fakeGHHandler(args []string) {

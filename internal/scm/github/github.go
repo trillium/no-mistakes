@@ -164,7 +164,7 @@ func (h *Host) Capabilities() scm.Capabilities {
 
 func (h *Host) Available(ctx context.Context) error {
 	if h.cliAvailable != nil && !h.cliAvailable() {
-		return errors.New("gh CLI is not installed")
+		return fmt.Errorf("%w: gh", scm.ErrCLINotInstalled)
 	}
 	// Scope the auth check to this repo's host. Unscoped `gh auth status`
 	// checks every authenticated account and exits non-zero if ANY of them has
@@ -176,10 +176,66 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
-		return errors.New("gh CLI is not authenticated")
+	out, err := h.cmd(ctx, "gh", authArgs...).CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return nil
+	// `gh auth status` VALIDATES the stored token against the GitHub API, so a
+	// network outage, a blocked proxy, or a GitHub incident exits non-zero and
+	// prints "The token in keyring is invalid" for a perfectly good credential.
+	// Treating that as "not authenticated" is a false negative, and it used to
+	// make the PR and CI steps silently skip for a fully authenticated
+	// operator. `gh auth token` reads the credential store offline, so it
+	// separates "no credential for this host" from "credential present, its
+	// validation call failed". A present credential means the host is usable:
+	// proceed, and let the real `gh pr create`/`gh pr checks` call fail loudly
+	// with the true provider error if the token turns out to be revoked. Never
+	// downgrade an unproven validation failure into a silent skip.
+	if h.credentialStored(ctx) {
+		return nil
+	}
+	return fmt.Errorf("gh CLI is not authenticated for %s: %s", h.authHostLabel(), authFailureDetail(out, err))
+}
+
+// credentialStored reports whether gh holds a token for this repo's host. It
+// reads the credential store only (keyring, hosts.yml, GH_TOKEN/GITHUB_TOKEN)
+// and makes no network call, which is exactly what distinguishes a missing
+// login from a failed token validation.
+func (h *Host) credentialStored(ctx context.Context) bool {
+	args := []string{"auth", "token"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+func (h *Host) authHostLabel() string {
+	if h.host != "" {
+		return h.host
+	}
+	return "any configured host"
+}
+
+// maxAuthFailureDetailBytes bounds the provider output echoed into the step
+// log. gh masks tokens in its own output, but the excerpt is still untrusted
+// third-party text on a user-facing error path, so keep it short.
+const maxAuthFailureDetailBytes = 512
+
+// authFailureDetail renders gh's own explanation for the failed auth check.
+// The old code discarded it entirely and asserted "gh CLI is not
+// authenticated", which told an authenticated operator nothing they could act
+// on. Falls back to the exec error when gh printed nothing (e.g. it could not
+// be started at all).
+func authFailureDetail(out []byte, err error) string {
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		return err.Error()
+	}
+	if len(detail) > maxAuthFailureDetailBytes {
+		detail = detail[:maxAuthFailureDetailBytes] + " ... (truncated)"
+	}
+	return strings.Join(strings.Fields(detail), " ")
 }
 
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {

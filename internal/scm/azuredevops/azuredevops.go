@@ -103,7 +103,7 @@ func (h *Host) scopeArgs() []string {
 
 func (h *Host) Available(ctx context.Context) error {
 	if h.cliAvailable != nil && !h.cliAvailable() {
-		return errors.New("az CLI is not installed")
+		return fmt.Errorf("%w: az", scm.ErrCLINotInstalled)
 	}
 	// The azure-devops extension is separate from the az binary; without it
 	// every `az repos`/`az devops` command fails. Probe it for a clear message.

@@ -51,14 +51,20 @@ func run(argv []string) int {
 }
 
 // runGhStub shadows any system-installed gh during e2e so a stray PR/CI
-// step can never reach github.com. It fails closed: `gh auth status`
-// returns non-zero (so SCM detection treats GitHub as unauthenticated)
-// and any other subcommand prints a clear error.
+// step can never reach github.com. It fails closed: every subcommand,
+// including both credential probes, returns non-zero.
+//
+// The e2e happy path does not depend on this. It skips PR/CI because the
+// harness upstream is a local path that scm.DetectProvider deliberately does
+// not recognize. This stub is the second layer, and under the current
+// availability rules an installed-but-unauthenticated CLI FAILS the step
+// rather than skipping it - which is the louder, more useful outcome for a
+// stray step that should never have reached a provider at all.
 func runGhStub(args []string) int {
 	if os.Getenv("FAKEAGENT_GH_MODE") == "fork-pr" {
 		return runGhForkPRStub(args)
 	}
-	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+	if len(args) >= 2 && args[0] == "auth" && (args[1] == "status" || args[1] == "token") {
 		fmt.Fprintln(os.Stderr, "fakeagent gh: not authenticated (e2e stub)")
 		return 1
 	}

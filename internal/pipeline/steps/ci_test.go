@@ -128,6 +128,63 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	}
 }
 
+func TestCIStep_UnauthenticatedProviderFailsInsteadOfSkipping(t *testing.T) {
+	t.Parallel()
+	// Skipping CI on an availability failure silently drops the run's only
+	// remote verification - the guarantee the pipeline exists to provide
+	// (robots-taam). Only a missing CLI may skip.
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGHWithAuth(t, "", map[string]string{"FAKE_CLI_AUTH": "none"})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatalf("Execute() error = nil (outcome %+v), want a failure instead of a silent skip", outcome)
+	}
+	if !strings.Contains(err.Error(), "gh auth login") {
+		t.Fatalf("Execute() error = %v, want gh's own explanation echoed", err)
+	}
+}
+
+func TestCIStep_TransientAuthValidationFailureStillMonitorsCI(t *testing.T) {
+	t.Parallel()
+	// The `gh auth status` API validation call can fail for a good credential;
+	// that must not stop CI monitoring.
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":      "ci-gh",
+		"FAKE_CLI_STATE":     "MERGED",
+		"FAKE_CLI_CHECKS":    "[]",
+		"FAKE_CLI_AUTH_BLIP": "1",
+	})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+	if outcome.Skipped {
+		t.Fatalf("CI step skipped on a transient auth-validation failure; logs: %v", logs)
+	}
+}
+
 func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
