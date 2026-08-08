@@ -222,10 +222,14 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Active for GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)**.
 
-- GitHub requires `gh` CLI, installed and authenticated.
-- GitLab requires `glab` CLI, installed and authenticated.
-- Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
-- Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.
+**Skipped when:**
+- The provider CLI (`gh`, `glab`, or `az`) is not installed
+- Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
+
+**Fails (never skips) when:**
+- The provider CLI is installed but has no credential on file for this repository's host. The step reports the CLI's own explanation so the fix is visible instead of the run reporting success with no CI verification.
+
+An unreachable provider is not treated as unauthenticated. `gh auth status` and `glab auth status` validate the stored token against the provider API, so they exit non-zero during a network outage and call a working credential invalid; the step confirms a credential is on file before deciding, and otherwise proceeds so the real CI check call surfaces the true provider error.
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
