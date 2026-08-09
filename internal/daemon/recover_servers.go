@@ -29,9 +29,13 @@ type daemonPIDFile struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 }
 
-// reapOrphanedServers kills managed-server subprocesses (opencode,
-// rovodev) left behind by a crashed predecessor daemon and deletes their
-// stale PID files.
+// reapOrphanedServers kills subprocess trees left behind by a crashed
+// predecessor daemon and deletes their stale PID files. Both kinds of recorded
+// leader are covered: managed servers (opencode, rovodev) and native agent
+// leaders (claude, codex, copilot, pi, acp:*). The kill targets the recorded
+// PID's whole process group, so an agent's descendants - notably the test
+// runners a Test-step agent spawns, which are the processes actually observed
+// surviving for a day at full CPU - are reaped along with the leader.
 //
 // Safety rules:
 //   - If another no-mistakes daemon is still running, skip everything so
@@ -43,7 +47,7 @@ type daemonPIDFile struct {
 func reapOrphanedServers(p *paths.Paths) {
 	dir := p.ServerPIDsDir()
 	if otherDaemonAlive(p) {
-		slog.Info("another daemon appears to be running; skipping managed-server reap", "dir", dir)
+		slog.Info("another daemon appears to be running; skipping orphaned process-group reap", "dir", dir)
 		return
 	}
 	entries, err := os.ReadDir(dir)
@@ -91,8 +95,13 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
-		slog.Info("reaping orphaned managed server", "pid", info.PID, "agent", info.Agent, "bin", info.Bin)
-		if err := terminateOrphanProcessGroupFunc(info.PID); err != nil {
+		slog.Info("reaping orphaned agent process group", "pid", info.PID, "agent", info.Agent, "bin", info.Bin)
+		// info.StartedAt goes with the pid so the terminator can re-prove
+		// identity at signal time. The check above is necessary but not
+		// sufficient: it happens before any signal, and the terminator waits
+		// between SIGTERM and SIGKILL, which is a window in which the PID can
+		// be released and reused.
+		if err := terminateOrphanProcessGroupFunc(info.PID, info.StartedAt); err != nil {
 			slog.Warn("terminate orphan", "pid", info.PID, "error", err)
 			continue
 		}
@@ -218,11 +227,19 @@ func readDaemonPIDFileData(data []byte) (daemonPIDFile, error) {
 }
 
 func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {
-	actual, err := processStartTimeFunc(info.PID)
+	return startTimeMatches(info.PID, info.StartedAt)
+}
+
+// startTimeMatches reports whether the process currently holding pid is the one
+// a record was written for. The kernel start time is the cheap, portable proxy
+// for a PID-stable handle: a PID can be released and reused at any moment, but
+// the replacement will not share the original's start time.
+func startTimeMatches(pid int, expected time.Time) (bool, error) {
+	actual, err := processStartTimeFunc(pid)
 	if err != nil {
 		return false, err
 	}
-	diff := actual.Sub(info.StartedAt)
+	diff := actual.Sub(expected)
 	if diff < 0 {
 		diff = -diff
 	}

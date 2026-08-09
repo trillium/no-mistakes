@@ -2,7 +2,10 @@
 
 package shellenv
 
-import "os/exec"
+import (
+	"errors"
+	"os/exec"
+)
 
 // ConfigureShellCommand is a no-op on platforms that lack process groups
 // (and a process-tree kill primitive). Context cancellation falls back to the
@@ -15,7 +18,15 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
 
-// TerminateShellCommandGroup is a no-op on platforms without a process-tree kill
-// primitive, mirroring ConfigureShellCommand. The reap-the-group-on-exit
-// guarantee is best-effort and platform-gated.
-func TerminateShellCommandGroup(cmd *exec.Cmd) {}
+// TerminateShellCommandGroup cannot reap a process tree on platforms without a
+// process-tree kill primitive, mirroring ConfigureShellCommand. The
+// reap-the-group-on-exit guarantee is best-effort and platform-gated. It
+// reports an error for a started command rather than claiming success, so a
+// caller holding a crash-recovery record keeps that record instead of dropping
+// it on the strength of a kill that never happened.
+func TerminateShellCommandGroup(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	return errors.New("process-group termination is unsupported on this platform")
+}

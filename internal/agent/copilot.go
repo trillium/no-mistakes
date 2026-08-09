@@ -48,7 +48,7 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeAgentCommand("copilot", cmd)
 	if err != nil {
 		return nil, fmt.Errorf("copilot start: %w", err)
 	}

@@ -121,7 +121,7 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 		}
 		return startedAt.Add(time.Second), nil
 	}
-	terminateOrphanProcessGroupFunc = func(pid int) error {
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
 		t.Fatalf("wizard-owned pid %d should not be terminated", pid)
 		return nil
 	}
@@ -177,7 +177,7 @@ func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenOwnerPIDReused(t *testing
 		}
 	}
 	terminated := 0
-	terminateOrphanProcessGroupFunc = func(pid int) error {
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
 		if pid != 12345 {
 			t.Fatalf("unexpected pid %d", pid)
 		}
@@ -524,5 +524,53 @@ func TestOtherDaemonAlive_TrueWhenDaemonStartTimeMatchesRecord(t *testing.T) {
 
 	if !otherDaemonAlive(p) {
 		t.Error("matching daemon start time should block orphan reaping")
+	}
+}
+
+// TestReapOrphanedServers_ReapsNativeAgentLeaderRecord pins that the reap is
+// keyed on "a recorded process-group leader", not on "a managed HTTP server".
+// Native agent leaders (claude, codex, copilot, pi, acp:*) are recorded with no
+// Port, and they are the ones whose descendants are test runners: the incident
+// behind this test was four orphaned Go test binaries with ppid=1 burning
+// ~24 CPU-hours after the daemon that owned their agent died uncatchably.
+// Reintroducing a server-shaped filter here would silently restore that leak.
+func TestReapOrphanedServers_ReapsNativeAgentLeaderRecord(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	path := writePIDRecord(t, p.ServerPIDsDir(), "claude-12345.json", agent.ServerPIDInfo{
+		PID:       12345,
+		Owner:     agent.ServerPIDOwnerDaemon,
+		Agent:     "claude",
+		Bin:       "/usr/local/bin/claude",
+		Port:      0, // native agent leaders have no port
+		StartedAt: startedAt,
+	})
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	oldTerminate := terminateOrphanProcessGroupFunc
+	processRunningFunc = func(pid int) (bool, error) { return pid == 12345, nil }
+	processStartTimeFunc = func(pid int) (time.Time, error) { return startedAt, nil }
+	terminated := []int{}
+	terminateOrphanProcessGroupFunc = func(pid int, _ time.Time) error {
+		terminated = append(terminated, pid)
+		return nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+		terminateOrphanProcessGroupFunc = oldTerminate
+	})
+
+	reapOrphanedServers(p)
+
+	if len(terminated) != 1 || terminated[0] != 12345 {
+		t.Fatalf("terminated groups = %v, want the agent leader [12345]", terminated)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("agent pid file should be removed after reap, got err=%v", err)
 	}
 }

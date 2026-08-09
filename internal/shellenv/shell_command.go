@@ -32,7 +32,7 @@ func RunShellCommand(cmd *exec.Cmd) error {
 	if err := StartShellCommand(cmd); err != nil {
 		return err
 	}
-	defer TerminateShellCommandGroup(cmd)
+	defer func() { _ = TerminateShellCommandGroup(cmd) }()
 	return cmd.Wait()
 }
 
@@ -126,7 +126,7 @@ func runShellCommandWithOutputPipes(cmd *exec.Cmd, pipes []shellOutputPipe) erro
 	waitCh := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
-		TerminateShellCommandGroup(cmd)
+		_ = TerminateShellCommandGroup(cmd)
 		waitCh <- err
 	}()
 
@@ -150,7 +150,7 @@ func runShellCommandWithOutputPipes(cmd *exec.Cmd, pipes []shellOutputPipe) erro
 			remainingCopies--
 			if err != nil && copyErr == nil {
 				copyErr = err
-				TerminateShellCommandGroup(cmd)
+				_ = TerminateShellCommandGroup(cmd)
 			}
 		case <-waitDelay:
 			waitDelayExpired = true

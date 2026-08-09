@@ -40,7 +40,9 @@ func TestTerminateShellCommandGroup_ReapsGrandchildAfterCleanExit(t *testing.T) 
 		t.Fatalf("precondition failed: grandchild %d should still be alive before reap", grandchild)
 	}
 
-	TerminateShellCommandGroup(cmd)
+	if err := TerminateShellCommandGroup(cmd); err != nil {
+		t.Fatalf("TerminateShellCommandGroup: %v", err)
+	}
 
 	if !pidGoneWithin(grandchild, 5*time.Second) {
 		_ = syscall.Kill(grandchild, syscall.SIGKILL)
@@ -50,11 +52,16 @@ func TestTerminateShellCommandGroup_ReapsGrandchildAfterCleanExit(t *testing.T) 
 
 // TestTerminateShellCommandGroup_NoopOnNilOrUnstarted guards the cheap safety
 // contract: a nil command, or one that was never started (no Process), must be
-// a no-op rather than panic or signal an arbitrary pid.
+// a no-op rather than panic or signal an arbitrary pid. Nothing was started, so
+// nothing can have survived: both cases report success.
 func TestTerminateShellCommandGroup_NoopOnNilOrUnstarted(t *testing.T) {
-	TerminateShellCommandGroup(nil)
+	if err := TerminateShellCommandGroup(nil); err != nil {
+		t.Fatalf("nil command: %v", err)
+	}
 	cmd := exec.Command("/bin/sh", "-c", "true") // never Start()ed: cmd.Process is nil
-	TerminateShellCommandGroup(cmd)
+	if err := TerminateShellCommandGroup(cmd); err != nil {
+		t.Fatalf("unstarted command: %v", err)
+	}
 }
 
 func TestCombinedOutputShellCommand_ReturnsCleanExitWithInheritedPipeGrandchild(t *testing.T) {
