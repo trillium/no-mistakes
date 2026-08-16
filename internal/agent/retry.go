@@ -169,6 +169,31 @@ func (e *neverTransientError) Error() string { return e.err.Error() }
 
 func (e *neverTransientError) Unwrap() error { return e.err }
 
+// transientScopedError is the partial form of the neverTransient rule, for an
+// error that is part harness and part agent. neverTransient suits an error whose
+// message is agent output; this suits one that must QUOTE agent output to be
+// diagnosable while still carrying harness-controlled evidence worth
+// classifying. Error() keeps the whole message for the operator; classification
+// reads only classifyText.
+//
+// Splitting the two is what lets an adapter fold a model's own words into an
+// error at all. Fold them into the classified message instead and the model
+// decides its own retry - see neverTransientError above for what that costs.
+type transientScopedError struct {
+	err          error
+	classifyText string
+}
+
+// transientScoped marks err as classifiable only through classifyText, which
+// must contain no agent-authored bytes.
+func transientScoped(err error, classifyText string) error {
+	return &transientScopedError{err: err, classifyText: classifyText}
+}
+
+func (e *transientScopedError) Error() string { return e.err.Error() }
+
+func (e *transientScopedError) Unwrap() error { return e.err }
+
 // classifyTransient reports whether an error message looks like a transient
 // API or network failure. It deliberately ignores ctx cancellation/deadline
 // errors so explicit cancellation is never silently retried, and errors marked
@@ -185,6 +210,10 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())
+	var scoped *transientScopedError
+	if errors.As(err, &scoped) {
+		msg = strings.ToLower(scoped.classifyText)
+	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
 			return sig.label, true

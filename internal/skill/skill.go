@@ -232,6 +232,12 @@ Run the pipeline and decide on its findings as they come up:
      *between-runs* action, correct only after a terminal outcome like this -
      never mid-run to circumvent a gate. Do not leave the user at a ` + "`failed`" + `
      outcome without either retrying or explaining what blocks it.
+   - ` + "`failed_work_preserved`" + ` - the run failed, but a step had ALREADY
+     committed its work and those commits are preserved in the local gate.
+     Do not redo that work and do not reset or replace the branch. Follow
+     ` + "`branch_sync.next_action`" + ` (` + "`recover_custody`" + `) to take the preserved head,
+     or ` + "`no-mistakes rerun`" + ` to resume validating it, then address whatever
+     ` + "`error`" + ` says killed the step.
 
 Before any post-pipeline local commit or fresh run, read the structured ` + "`branch_sync`" + ` object returned by AXI home, status, or a drive result.
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
@@ -321,7 +327,7 @@ no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside 
 - A run object with a ` + "`running`" + ` or ` + "`fixing`" + ` step may include an ` + "`active_steps`" + ` table. Use it to see the active duration, latest activity, native agent PID, and current execution or fix round.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
-- Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.
+- Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed, failed_work_preserved, or cancelled final outcomes, ` + "`2`" + ` bad usage.
 
 A ` + "`gate:`" + ` waiting on you looks roughly like this - a ` + "`gate:`" + ` line naming the step, optional step-specific fields such as ` + "`note`" + `, a ` + "`findings[N]{...}:`" + ` table with one row per finding, and a ` + "`help[N]:`" + ` list of next commands:
 
@@ -344,7 +350,7 @@ Read the ` + "`action`" + ` column per row: decide ` + "`r1`" + ` (auto-fix) on 
 judgment - ` + "`respond --action fix --findings r1`" + ` hands it to the pipeline to
 fix - but stop and escalate ` + "`r2`" + ` (ask-user) to the user before responding. A
 final state
-instead shows ` + "`outcome: <checks-passed|passed|failed|cancelled>`" + ` with no
+instead shows ` + "`outcome: <checks-passed|passed|failed|failed_work_preserved|cancelled>`" + ` with no
 ` + "`findings`" + ` table. Field names and exact columns can vary by step and version,
 so read the actual ` + "`findings`" + ` header rather than assuming this layout.
 `

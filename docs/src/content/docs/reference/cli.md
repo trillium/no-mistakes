@@ -206,7 +206,7 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`. When the run failed, `axi run` and `axi status` report `outcome: failed_work_preserved` instead of a plain `outcome: failed` to signal that the step's commits are preserved and must not be redone.
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
 Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.

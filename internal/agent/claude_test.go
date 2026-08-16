@@ -119,6 +119,7 @@ func TestParseClaudeEvents_AssistantMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -157,6 +158,7 @@ func TestParseClaudeEvents_ResultEvent(t *testing.T) {
 		nil,
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -200,6 +202,7 @@ func TestParseClaudeEvents_LargeAssistantEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -230,6 +233,7 @@ func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -267,6 +271,7 @@ func TestParseClaudeEvents_NoSeparatorForFirstMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -294,6 +299,7 @@ func TestParseClaudeEvents_NoSeparatorAfterToolOnlyEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -319,6 +325,7 @@ func TestParseClaudeEvents_DoesNotSeparateSplitAssistantReply(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -343,6 +350,7 @@ func TestParseClaudeEvents_SkipsMalformedLines(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -356,7 +364,7 @@ func TestParseClaudeEvents_CacheTokens(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10},"content":[]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +384,7 @@ func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -388,7 +396,7 @@ func TestParseClaudeEvents_ErrorResult(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,7 +538,7 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

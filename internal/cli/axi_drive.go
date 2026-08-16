@@ -57,6 +57,34 @@ func outcomeFor(status string) string {
 	}
 }
 
+// outcomeFailedWorkPreserved is the failure word for a run that died holding
+// committed work. `failed` alone is read as "nothing happened", and the reader
+// then re-does work that is already durable - the exact loop
+// preserveGateFixCommitsGuidance exists to prevent (robots-618i).
+const outcomeFailedWorkPreserved = "failed_work_preserved"
+
+// outcomeForRun refines the outcome word with the run's custody facts. Only a
+// FAILURE is refined: preserved commits explain a failure, they do not change
+// what passing or cancelling means (cancellation already reports its own word,
+// and its custody is signposted by branch_sync all the same).
+func outcomeForRun(status string, sync *branchsync.State) string {
+	if types.RunStatus(status) == types.RunFailed && branchsync.WorkPreserved(sync) {
+		return outcomeFailedWorkPreserved
+	}
+	return outcomeFor(status)
+}
+
+// failedWorkPreservedHelp tells the reader the thing the bare outcome word hid:
+// the step's commits exist, so the next move is to recover them, not to redo
+// them.
+func failedWorkPreservedHelp() []string {
+	return []string{
+		"The run failed, but the step's work was already committed and is preserved in the local gate - do NOT redo it. " +
+			"Follow `branch_sync.next_action` (code `recover_custody`) to take the preserved head, or run `no-mistakes rerun` to resume validating it.",
+		"Read `error` for why the step died before assuming the committed work is at fault.",
+	}
+}
+
 func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
@@ -612,7 +640,8 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
 	hasBranchSync := false
-	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
+	syncField, syncState := cachedBranchSyncFacts(cmd, run.ID)
+	if syncField != nil {
 		fields = append(fields, *syncField)
 		hasBranchSync = true
 	}
@@ -648,7 +677,8 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		return nil
 	}
 
-	fields = append(fields, toon.Field{Key: "outcome", Value: outcomeFor(rv.Status)})
+	outcome := outcomeForRun(rv.Status, syncState)
+	fields = append(fields, toon.Field{Key: "outcome", Value: outcome})
 	if run.Error != nil && *run.Error != "" {
 		fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 	}
@@ -669,7 +699,12 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		return nil
 	}
 
-	help := []string{preserveGateFixCommitsGuidance}
+	var help []string
+	if outcome == outcomeFailedWorkPreserved {
+		// Lead with it: this is the reader's whole reason not to redo the work.
+		help = append(help, failedWorkPreservedHelp()...)
+	}
+	help = append(help, preserveGateFixCommitsGuidance)
 	if hasBranchSync {
 		help = append(help, branchSyncAgentGuidance)
 	}

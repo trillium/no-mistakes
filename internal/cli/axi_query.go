@@ -81,15 +81,21 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	rv := runViewFromDB(run, steps)
 	annotateRunView(env, &rv)
 	fields := []toon.Field{runObjectField(rv)}
-	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
+	syncField, syncState := cachedBranchSyncFacts(cmd, run.ID)
+	if syncField != nil {
 		fields = append(fields, *syncField)
 	}
 	if gate, ok := rv.awaitingStep(); ok {
 		fields = append(fields, gateFields(gate)...)
 	} else if terminalStatus(rv.Status) {
-		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeFor(rv.Status)})
+		outcome := outcomeForRun(rv.Status, syncState)
+		fields = append(fields, toon.Field{Key: "outcome", Value: outcome})
 		if run.Error != nil && *run.Error != "" {
 			fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
+		}
+		if outcome == outcomeFailedWorkPreserved {
+			help := append(failedWorkPreservedHelp(), preserveGateFixCommitsGuidance)
+			fields = append(fields, toon.Field{Key: "help", Value: help})
 		}
 	}
 	emitDoc(cmd, fields...)

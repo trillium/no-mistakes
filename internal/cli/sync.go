@@ -268,7 +268,7 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
-		if state.Safety == "blocked_pipeline_owned_recoverable" {
+		if state.Safety == branchsync.SafetyPipelineOwnedRecoverable {
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
 		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
@@ -341,7 +341,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 	if state.NextAction != nil {
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
-	if state.Safety == "blocked_pipeline_owned_recoverable" {
+	if state.Safety == branchsync.SafetyPipelineOwnedRecoverable {
 		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
 	}
 	if len(help) > 0 {
@@ -473,20 +473,29 @@ func branchSyncField(state branchsync.State) toON.Field {
 }
 
 func cachedBranchSyncField(ctxCmd *cobra.Command, runID string) *toON.Field {
+	field, _ := cachedBranchSyncFacts(ctxCmd, runID)
+	return field
+}
+
+// cachedBranchSyncFacts returns the branch_sync field to report along with the
+// state it was rendered from, for a caller that must also REASON about custody
+// rather than only print it. Both results are nil together: a state that is not
+// reported is not a fact anything else may lean on either.
+func cachedBranchSyncFacts(ctxCmd *cobra.Command, runID string) (*toON.Field, *branchsync.State) {
 	service, closeFn, err := openSyncService()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer closeFn()
 	state := service.InspectCached(ctxCmd.Context())
 	if runID != "" && state.Pipeline.RunID != runID {
-		return nil
+		return nil, nil
 	}
 	if !relevantCachedSyncState(state) {
-		return nil
+		return nil, nil
 	}
 	field := branchSyncField(state)
-	return &field
+	return &field, &state
 }
 
 func relevantCachedSyncState(state branchsync.State) bool {
