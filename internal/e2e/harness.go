@@ -114,9 +114,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Symlink each agent name to the same fake binary. Codex and Claude
 	// dispatch by argv[0] basename; opencode the same. Symlinks (not
 	// copies) keep the build cheap on subsequent tests. The `gh` symlink
-	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
-	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
-	// the fakeagent stub instead of a real, authenticated system gh.
+	// is a guard rail: any stray invocation of gh by the pipeline (e.g.
+	// PR/CI on a misconfigured origin) must hit the fakeagent stub instead
+	// of a real, authenticated system gh. Prepending BinDir to os.Environ
+	// below is only half of that - the daemon re-resolves its PATH from a
+	// login shell, so writeLoginShellPathSeed is the half that decides it.
 	for _, name := range []string{"claude", "codex", "opencode", "gh"} {
 		linkPath := filepath.Join(h.BinDir, name)
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
@@ -174,10 +176,31 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 }
 
 func (h *Harness) writeLoginShellPathSeed() {
-	line := "export PATH=" + shellQuote(h.BinDir) + ":$PATH\n"
-	for _, name := range []string{".zshenv", ".zprofile", ".bash_profile", ".profile"} {
-		if err := os.WriteFile(filepath.Join(h.HomeDir, name), []byte(line), 0o644); err != nil {
-			h.t.Fatalf("write %s: %v", name, err)
+	writeLoginShellPathSeed(h.t, h.HomeDir, h.BinDir)
+}
+
+// loginShellStartupFiles are the startup files the seed writes. The daemon
+// re-resolves its environment from a LOGIN, INTERACTIVE shell
+// (shellenv.resolveUncached), so the seed has to cover the interactive files
+// too, not just the login ones: an interactive zsh reads /etc/zshrc after
+// ~/.zprofile, and on macOS that puts the Homebrew prefix ahead of a BinDir
+// prepended earlier. Missing ~/.zshrc there is what let the PR step reach the
+// real GitHub API with the fixtures' nonexistent repo slugs on a developer
+// machine with an authenticated gh. Every file re-prepends, so whichever one
+// the probe shell reads last still leaves BinDir first.
+var loginShellStartupFiles = []string{
+	".zshenv", ".zprofile", ".zshrc", ".zlogin",
+	".bash_profile", ".bashrc", ".profile",
+}
+
+// writeLoginShellPathSeed makes binDir win the login shell's PATH for a
+// process whose HOME is homeDir. Regression: TestLoginShellPathSeedShadowsSystemToolsForTheDaemon.
+func writeLoginShellPathSeed(t *testing.T, homeDir, binDir string) {
+	t.Helper()
+	line := "export PATH=" + shellQuote(binDir) + ":$PATH\n"
+	for _, name := range loginShellStartupFiles {
+		if err := os.WriteFile(filepath.Join(homeDir, name), []byte(line), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
 		}
 	}
 }
