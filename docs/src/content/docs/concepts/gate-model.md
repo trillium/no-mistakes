@@ -122,8 +122,13 @@ and any Git push options such as `no-mistakes.skip=test,lint`.
 For compatibility with older managed hooks, `notify-push` also normalizes
 relative gate paths before handing them to the daemon.
 The post-receive hook never blocks an already admitted push - Git ignores its
-exit status - but notification failures are surfaced to the pushing client on
-stderr and appended to `notify-push.log` in the bare repo for later inspection.
+exit status. When notify-push fails (daemon rejected the notification or was
+unreachable), the failure is printed to stderr and logged to `notify-push.log`
+in the bare repo for later inspection. When the daemon accepts a notification
+but does not confirm the run within the wait deadline (the ref is stored; whether
+run creation completed is unconfirmed), an advisory is printed to stderr instead of the "Pipeline
+started" banner, distinguishing a delivered-but-unconfirmed request from an
+actual failure.
 
 ### Daemon
 
@@ -206,7 +211,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `update-check.json`              | Cached update check result                                                                                              |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
-| `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |
+| `repos/<id>.git/notify-push.log` | Persistent log of daemon notification failures (rejected or unreachable; unconfirmed notifications are not logged here)   |
 | `worktrees/<repoID>/<runID>/`    | Disposable worktrees (cleaned up after each run)                                                                        |
 | `logs/<runID>/<step>.log`        | Per-step log files                                                                                                      |
 | `logs/daemon.log`                | Bounded daemon lifecycle log                                                                                            |

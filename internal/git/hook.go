@@ -165,6 +165,7 @@ esac
 LOG="$GATE_DIR/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
+notify_unconfirmed=0
 while read oldrev newrev refname; do
 	  set -- --gate "$GATE_DIR" \
 	    --ref "$refname" \
@@ -189,10 +190,18 @@ while read oldrev newrev refname; do
       printf '%s\n' "$out"
       printf 'See %s for full history.\n' "$LOG"
     } >&2
+  elif [ -n "$out" ]; then
+    # notify-push succeeded but had something to say: the daemon took the
+    # notification and never confirmed the run. Not a push failure, so it is
+    # neither logged as one nor exited non-zero - but the client must still see
+    # it, and it replaces the banner because "Pipeline started" claims more than
+    # is known here.
+    notify_unconfirmed=1
+    printf '%s\n' "$out" >&2
   fi
 done
 
-if [ "$notify_failed" -eq 0 ]; then
+if [ "$notify_failed" -eq 0 ] && [ "$notify_unconfirmed" -eq 0 ]; then
   cat >&2 <<'BANNER'
 _  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 |\ | |  |    |\/| | [__   |  |__| |_/  |___ [__
