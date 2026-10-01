@@ -1,6 +1,10 @@
 module github.com/kunchenguid/no-mistakes
 
-go 1.25.0
+// Floor is 1.26.5 to exclude every Go release affected by golang/go#78059,
+// where ThreadSanitizer corrupted its own state and killed the child of any
+// fork/exec under -race. See the AGENTS.md Testing Conventions entry; the
+// floor lives on this directive because a toolchain line cannot express it.
+go 1.26.5
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
