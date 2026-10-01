@@ -22,6 +22,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// frozenCIClock returns a CIStep clock that never advances.
+//
+// A CI monitoring test whose termination is driven by its own waitForNextPoll
+// hook must not also be racing the wall clock. CIStep.Execute re-checks
+// now().Sub(timeoutAnchor) >= Config.CITimeout on every loop iteration, so on a
+// loaded machine - the whole package under -race, tests forking the fake CLI in
+// parallel - real elapsed time can pass a short CITimeout before the hook fires.
+// The step then returns the timeout outcome with a nil error and the test fails
+// on whatever it asserted about the path under test. Because which test loses
+// that race depends on scheduling, the failing test name changes from run to
+// run and none of them reproduce under -run (robots-flme).
+//
+// Freezing the clock pins elapsed time at zero, so only the test's own hook can
+// end the loop. Tests that are about timeout, re-arm, or poll-interval
+// behaviour inject their own advancing clock instead.
+func frozenCIClock() func() time.Time {
+	frozen := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	return func() time.Time { return frozen }
+}
+
 type mockAgent struct {
 	name  string
 	runFn func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)

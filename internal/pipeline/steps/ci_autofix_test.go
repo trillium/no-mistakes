@@ -73,6 +73,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
@@ -133,6 +134,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -237,6 +239,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -331,6 +334,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -605,6 +609,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -693,6 +698,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 3 {
@@ -778,6 +784,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			return nil
 		},
@@ -871,6 +878,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
@@ -945,6 +953,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -1053,6 +1062,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -1138,6 +1148,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	sctx.Log = func(s string) {}
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()

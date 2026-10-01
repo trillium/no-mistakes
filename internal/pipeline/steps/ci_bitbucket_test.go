@@ -38,6 +38,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -86,6 +87,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -114,7 +116,7 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
-	step := &CIStep{}
+	step := &CIStep{now: frozenCIClock()}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +161,7 @@ func TestCIStep_BitbucketStoppedCheckParksForADecision(t *testing.T) {
 
 	polls := 0
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls >= 5 {
@@ -243,6 +246,7 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -326,6 +330,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -412,6 +417,7 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now: frozenCIClock(),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
