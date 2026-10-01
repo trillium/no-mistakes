@@ -51,8 +51,27 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 	return runInDir(ctx, bareDir, append([]string{"--git-dir=" + bareDir}, args...)...)
 }
 
+// RunWithInput is Run with stdin supplied from a string. It exists for the
+// batch/transactional Git plumbing whose input is only available on stdin, most
+// importantly `update-ref --stdin`, which applies every command in one atomic
+// ref transaction and is the only way to make a `verify` precondition and a ref
+// write happen without a check-then-act gap between them.
+func RunWithInput(ctx context.Context, dir, stdin string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithInput(ctx, dir, stdin, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithInput(ctx, dir, stdin, args...)
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	return runInDirWithInput(ctx, dir, "", args...)
+}
+
+func runInDirWithInput(ctx context.Context, dir, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
 	winproc.Harden(cmd)
