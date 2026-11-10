@@ -186,7 +186,7 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		return nil, usage, pid, fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		return nil, usage, pid, fmt.Errorf("claude exited: %w: %s", waitErr, claudeExitDetail(stderrBuf, result))
 	}
 
 	if result == nil {
@@ -196,6 +196,25 @@ func (a *claudeAgent) runTurn(ctx context.Context, prompt string, opts RunOpts, 
 }
 
 func (a *claudeAgent) Close() error { return nil }
+
+// claudeExitDetail explains a non-zero claude exit. Claude reports failures such
+// as an exhausted account on its stdout result event and leaves stderr empty, so
+// stderr alone would surface only "exit status 1". Prefer stderr, then the
+// result event's text, then any assistant text already streamed.
+func claudeExitDetail(stderr []byte, result *claudeResult) string {
+	if detail := strings.TrimSpace(string(stderr)); detail != "" {
+		return detail
+	}
+	if result != nil {
+		if detail := strings.TrimSpace(result.ResultText); detail != "" {
+			return detail
+		}
+		if result.IsError {
+			return strings.TrimSpace(result.text)
+		}
+	}
+	return ""
+}
 
 // claudeTextNotJSONError marks the one case a repair turn can fix: claude
 // succeeded but its text output is not the JSON the schema requires, even after
@@ -394,6 +413,7 @@ type claudeEvent struct {
 	// result fields
 	Subtype          string          `json:"subtype,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
+	ResultText       string          `json:"result,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 	Usage            *claudeUsage    `json:"usage,omitempty"`
 }
@@ -402,6 +422,7 @@ type claudeEvent struct {
 type claudeResult struct {
 	Subtype          string
 	IsError          bool
+	ResultText       string // error or final text carried by the result event itself
 	StructuredOutput json.RawMessage
 	text             string // accumulated text from assistant events
 	rawEvent         json.RawMessage
@@ -489,6 +510,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				*result = &claudeResult{
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
+					ResultText:       event.ResultText,
 					StructuredOutput: event.StructuredOutput,
 					text:             textBuf,
 					rawEvent:         raw,

@@ -685,6 +685,21 @@ func TestClaudeAgent_EarlyExitWithoutReadingLargeStdinDoesNotLeakGoroutines(t *t
 	}
 }
 
+func TestClaudeAgent_NonZeroExitReportsAgentErrorTextWithEmptyStderr(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "fail-result")
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.runOnce(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("failing claude unexpectedly succeeded")
+	}
+	for _, want := range []string{"claude exited:", "exit status 1", "You're out of extra usage"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *testing.T) {
 	for _, mode := range []string{"block", "spawn-grandchild"} {
 		t.Run(mode, func(t *testing.T) {
@@ -737,6 +752,10 @@ func TestClaudeStdinHelper(t *testing.T) {
 	switch mode {
 	case "exit-early":
 		os.Exit(0)
+	case "fail-result":
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","is_error":true,"session_id":"helper-session","result":"You're out of extra usage · resets 3am"}`+"\n")
+		os.Exit(1)
 	case "block":
 		_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_READY"), []byte("ready"), 0o644)
 		for {
